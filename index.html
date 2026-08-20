@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#1c2260">
+<meta name="description" content="Tabled — buy, sell and trade used board games locally.">
+<title>Tabled</title>
+<link rel="icon" href="tabled_logo1.png">
+<link rel="apple-touch-icon" href="tabled_logo1.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/app.css?v=20260819c">
+</head>
+<body>
+
+<header class="topbar">
+  <span class="mark">T</span>
+  <span class="brand">TABLED</span>
+  <span class="build-tag" id="build-tag" title="Loaded build — if this looks stale, hard-refresh"></span>
+</header>
+
+<div id="env-banner" hidden></div>
+
+<!-- Boot spinner. Stays up until auth state resolves, so the feed never flashes
+     before we know whether anyone is signed in. -->
+<div id="boot">
+  <div>
+    <span class="spin"></span>
+    <p class="fine">Starting Tabled…</p>
+  </div>
+</div>
+
+<div id="gate" hidden>
+  <div class="gate-inner">
+    <div class="logo">T</div>
+    <h1>Tabled</h1>
+    <p>Buy, sell and trade used board games with people near you — without the
+       Facebook Marketplace experience.</p>
+    <p><button class="btn" id="gate-signin">Sign in with Google</button></p>
+    <p class="fine">Your email address is never shown to other users. Only your
+       name, photo and the general area you choose are public.</p>
+    <p class="fine">Tabled currently serves the United States only.</p>
+  </div>
+</div>
+
+<main id="view" hidden></main>
+
+<nav id="nav" hidden>
+  <button data-nav="browse"><span class="ico">▦</span>Browse</button>
+  <button data-nav="sell"><span class="ico">＋</span>Sell</button>
+  <button data-nav="inbox"><span class="ico">✉<span class="nav-badge" id="nav-unread" hidden></span></span>Requests</button>
+  <button data-nav="me"><span class="ico">☺</span>Me</button>
+</nav>
+
+<div id="modal-root"></div>
+<div id="toast"></div>
+
+<!-- Classic scripts, dependency order top to bottom. Bump every ?v= stamp
+     together with CFG.BUILD or the browser will serve a mixed set of files. -->
+<script src="js/config.js?v=20260819c"></script>
+<script src="js/util.js?v=20260819c"></script>
+<script src="js/geo.js?v=20260819c"></script>
+<script src="js/store.js?v=20260819c"></script>
+<script src="js/bgg.js?v=20260819c"></script>
+<script src="js/safety.js?v=20260819c"></script>
+<script src="js/views-feed.js?v=20260819c"></script>
+<script src="js/views-listing.js?v=20260819c"></script>
+<script src="js/views-create.js?v=20260819c"></script>
+<script src="js/views-profile.js?v=20260819c"></script>
+<script src="js/views-thread.js?v=20260819c"></script>
+<script src="js/views-dashboard.js?v=20260819c"></script>
+<script src="js/app.js?v=20260819c"></script>
+
+<!-- Module, so it loads after everything above and can use import syntax. -->
+<script type="module" src="js/firebase-config.js?v=20260819c"></script>
+
+</body>
+</html>

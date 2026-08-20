@@ -1,0 +1,37 @@
+# Dependencies — functions/ is installed from package.json on the deploy machine.
+node_modules/
+functions/node_modules/
+
+# Firebase CLI local state
+.firebase/
+*.log
+firebase-debug.log
+firebase-debug.*.log
+ui-debug.log
+database-debug.log
+firestore-debug.log
+pubsub-debug.log
+
+# Local emulator data
+.runtimeconfig.json
+*-export/
+
+# Secrets. Nothing in this repo should ever hold one — the geocoding and Stripe
+# keys live in Cloud Functions Secret Manager, never on disk. These patterns are
+# a backstop against a service-account key being downloaded into the project
+# folder "just to test something", which is the usual way one gets committed.
+*serviceAccount*.json
+*service-account*.json
+*-adminsdk-*.json
+.env
+.env.*
+!.env.example
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~

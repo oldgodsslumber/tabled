@@ -1,0 +1,338 @@
+rules_version = '2';
+
+// Tabled -- Firestore security rules.
+//
+// The shape of this app doesn't fit any single canned pattern: it needs public
+// browsing, owner-only writes, a set of denormalized fields no client may ever
+// touch, two-participant-only chat threads, and counterparty-written reviews.
+// So these are written per-collection.
+//
+// The rule that shows up everywhere: DENORMALIZED FIELDS ARE FUNCTION-ONLY.
+// tradeCount, avgRating, verifiedSeller, viewCount, hotScore, openReportCount,
+// hold/queue state -- none of them are client-writable, not even by the owner of
+// the document they live on. A blanket "the owner can write their own doc" rule
+// would let anyone set verifiedSeller: true on themselves, which makes the
+// whole trust surface decorative. Cloud Functions use the admin SDK and bypass
+// these rules entirely, which is exactly why the client must be locked out.
+//
+// Collections below the M3 line (requests, messages, reviews, events) are ruled
+// now rather than later. An unruled collection in a published database is open
+// to nothing -- but the moment M4 ships, "we'll write the rules with the
+// feature" turns into a production database with no rules on its chat.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- helpers ----
+
+    function signedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+    function isUser(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+    function changed(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+    // ---- Geo-lock (defence in depth) ----------------------------------------
+    // Tabled is US-only. The REAL enforcement is the geocodeArea Cloud Function:
+    // every geoPoint in the system comes from it, and it applies a hard country
+    // filter the client can't reach around.
+    //
+    // These two guards exist for the case the function can't cover -- a modified
+    // client writing a geoPoint straight into Firestore without ever calling it.
+    //
+    // Be precise about what this catches. It rejects other continents -- Paris,
+    // Tokyo, Sao Paulo. It does NOT reject Toronto or Monterrey, and it can't:
+    // no rectangle separates the US from Canada and Mexico, because covering
+    // Alaska to 72 deg N necessarily covers all of Canada, and covering south Texas
+    // necessarily covers northern Mexico. It also does nothing about someone
+    // lying over which US city they're in, which is already possible and is a
+    // different problem.
+    //
+    // So this is a sanity check, not the gate. Don't grow it into a polygon
+    // chasing the cases above -- the function already handles them exactly.
+    //
+    // The second longitude range is the Aleutians, which cross the antimeridian.
+    // A single -180..-66 box silently excludes part of Alaska.
+    //
+    // Mirrored in js/config.js (CFG.GEO) and functions/index.js.
+    function usPoint(p) {
+      return p == null || (
+        p.latitude >= 18 && p.latitude <= 72 && (
+          (p.longitude >= -180 && p.longitude <= -66) ||
+          (p.longitude >= 172 && p.longitude <= 180)
+        )
+      );
+    }
+    // Null is permitted: a profile has no area until its owner sets one, and a
+    // shipping-only listing never needs a point at all.
+    function usCountry(c) {
+      return c == null || c == 'US';
+    }
+    function geoOk(data) {
+      return usPoint(data.get('geoPoint', null)) && usCountry(data.get('countryCode', null));
+    }
+
+    // A restricted account (5+ open reports) can still browse and still read
+    // everything it could before -- it just can't create anything new.
+    function notRestricted() {
+      return !exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.restricted != true;
+    }
+
+    // ---- users ----
+
+    match /users/{uid} {
+      // Public: displayName, photoURL, bio, generalArea and the fuzzed point.
+      // Email is never in this document, so a public read cannot leak one.
+      allow read: if true;
+
+      allow create: if isUser(uid)
+        && request.resource.data.tradeCount == 0
+        && request.resource.data.reviewCount == 0
+        && request.resource.data.verifiedSeller == false
+        && request.resource.data.avgRating == null
+        && request.resource.data.get('restricted', false) == false
+        && request.resource.data.get('openReportCount', 0) == 0
+        && geoOk(request.resource.data);
+
+      allow update: if isUser(uid)
+        && !changed([
+             'tradeCount', 'avgRating', 'reviewCount', 'verifiedSeller',
+             'openReportCount', 'restricted'
+           ])
+        && geoOk(request.resource.data);
+
+      allow delete: if false;
+
+      // Your block list is yours alone -- nobody can read who you've blocked,
+      // and nobody can add entries to someone else's list.
+      match /blocked/{blockedUid} {
+        allow read, write: if isUser(uid);
+      }
+
+      // Notifications are written only by Cloud Functions. If clients could
+      // create these, anyone could spam anyone (or themselves) with fake
+      // "your item sold" notices. The owner may only flip `read`.
+      match /notifications/{notificationId} {
+        allow read: if isUser(uid);
+        allow update: if isUser(uid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+        allow create, delete: if false;
+      }
+
+      // Slot exclusivity comes from the deterministic doc ID, but that alone
+      // doesn't stop someone claiming slots against a request that isn't
+      // theirs -- so the write goes through the bookSlot callable (M6).
+      match /bookedSlots/{slotId} {
+        allow read: if signedIn();
+        allow write: if false;
+      }
+    }
+
+    // ---- listings ----
+
+    match /listings/{listingId} {
+      // Hidden (auto-report) and archived listings stay readable by their
+      // owner, so a seller can see what got flagged instead of finding it
+      // silently gone.
+      allow read: if resource.data.status == 'active'
+        || (signedIn() && resource.data.sellerId == request.auth.uid);
+
+      allow create: if isUser(request.resource.data.sellerId)
+        && notRestricted()
+        && request.resource.data.status == 'active'
+        && request.resource.data.viewCount == 0
+        && request.resource.data.requestCount == 0
+        && request.resource.data.hotScore == 0
+        && request.resource.data.openReportCount == 0
+        && geoOk(request.resource.data);
+
+      allow update: if isUser(resource.data.sellerId)
+        && geoOk(request.resource.data)
+        // Counters and scores are function-territory.
+        && !changed(['viewCount', 'requestCount', 'hotScore', 'openReportCount', 'sellerId'])
+        // An owner may archive or reactivate their own listing, but may not
+        // lift an auto-hide -- otherwise the circuit breaker is a suggestion.
+        && (resource.data.status != 'hidden' || request.resource.data.status == 'hidden')
+        && request.resource.data.status in ['active', 'archived', 'hidden'];
+
+      allow delete: if isUser(resource.data.sellerId);
+
+      // gameEntries: public read alongside the parent. Hold and queue state
+      // (M5+) is written only by the function layer -- that's what keeps a
+      // buyer from editing their way to the front of a queue. On edit the
+      // client re-sends these fields unchanged, which this allows; changing
+      // them is what it blocks.
+      //
+      // Ownership is checked against the entry's OWN sellerId field, not by
+      // looking up the parent listing. Rules evaluate every write in a batch
+      // against the pre-batch state of the database, so a get() on the parent
+      // would fail on a listing's first save -- the parent doesn't exist yet at
+      // the instant the entry is evaluated. The listing's create rule already
+      // pins its sellerId to the caller, so the two cannot disagree.
+      match /gameEntries/{entryId} {
+        allow read: if true;
+
+        allow create: if isUser(request.resource.data.sellerId)
+          && request.resource.data.status == 'active'
+          && request.resource.data.currentHoldRequestId == null
+          && request.resource.data.holdExpiresAt == null
+          && request.resource.data.queueCount == 0;
+
+        allow update: if isUser(resource.data.sellerId)
+          && !changed(['status', 'currentHoldRequestId', 'holdExpiresAt', 'queueCount', 'sellerId']);
+
+        allow delete: if isUser(resource.data.sellerId);
+      }
+    }
+
+    // ---- games (BGG cache) ----
+
+    match /games/{bggId} {
+      // Read by everyone -- categories and mechanics drive the feed filters.
+      // Written only by getGameDetails, so nobody can poison the cache with a
+      // fake suggestedPrice and manufacture a permanent Good Deal ranking.
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ---- reports ----
+
+    match /reports/{reportId} {
+      // Write-only from the client. Reports are not readable by anyone here --
+      // not even their author -- because a readable report collection tells a
+      // bad actor exactly how close they are to a threshold. Reading happens
+      // in the console until an admin view exists.
+      //
+      // The deterministic ID ({reporter}_{type}_{target}) is enforced by
+      // requiring reporterId == auth.uid: you cannot file under someone else's
+      // name, and you cannot file the same report twice to inflate a count.
+      allow create: if isUser(request.resource.data.reporterId)
+        && request.resource.data.status == 'open'
+        && request.resource.data.targetType in ['listing', 'user', 'message', 'event']
+        && request.resource.data.targetId is string
+        && request.resource.data.reason is string;
+
+      allow read, update, delete: if false;
+    }
+
+    // ---- config ----
+
+    match /config/{docId} {
+      // Edited by hand in the console. feeWaiverEndDate lives here (M8).
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // =====================================================================
+    // Below this line: collections whose features arrive in M4-M9. Ruled now
+    // so they are never briefly unprotected in a live database.
+    // =====================================================================
+
+    match /events/{eventId} {
+      // Open creation, same trust model as listings -- backed by reporting
+      // rather than a curation gate.
+      allow read: if true;
+      allow create: if signedIn() && notRestricted()
+        && isUser(request.resource.data.createdBy);
+      allow update, delete: if isUser(resource.data.createdBy);
+    }
+
+    match /requests/{requestId} {
+      function isParticipant() {
+        return signedIn()
+          && (resource.data.buyerId == request.auth.uid
+              || resource.data.sellerId == request.auth.uid);
+      }
+
+      allow read: if isParticipant();
+
+      allow create: if isUser(request.resource.data.buyerId)
+        && notRestricted()
+        // You cannot open a request against someone who has blocked you.
+        && !exists(/databases/$(database)/documents/users/$(request.resource.data.sellerId)/blocked/$(request.auth.uid))
+        && request.resource.data.status in ['queued', 'onHold']
+        && request.resource.data.feePaid == false
+        && request.resource.data.buyerId != request.resource.data.sellerId
+        // Nothing may arrive pre-scheduled or pre-read.
+        && request.resource.data.scheduledTime == null
+        && request.resource.data.proposedTime == null;
+
+      // Marking a thread read is always allowed, including on a completed
+      // trade -- it's per-user bookkeeping, not trade state, and it's the only
+      // write that must survive the freeze below. Split out as its own rule so
+      // the freeze can stay absolute for everything else.
+      allow update: if isParticipant()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['lastReadBuyerAt', 'lastReadSellerAt'])
+        && (resource.data.buyerId == request.auth.uid
+            ? !changed(['lastReadSellerAt'])
+            : !changed(['lastReadBuyerAt']));
+
+      allow update: if isParticipant()
+        // A completed trade is frozen -- trade history and the fee state behind
+        // the Verified badge must not be editable after the fact.
+        && resource.data.status != 'completed'
+        && !changed(['feePaid', 'buyerId', 'sellerId', 'queuePosition',
+                     'listingId', 'gameEntryId', 'createdAt'])
+        // Only the current holder may put a time on the table; someone sitting
+        // at position 3 can read and chat but cannot jump the queue.
+        && (request.resource.data.status != 'proposedTime'
+            || resource.data.queuePosition == 0)
+        // Confirming a proposal is the SELLER's call, whoever proposed it.
+        // Without this a buyer could propose a time and immediately mark it
+        // scheduled themselves, which is the entire gate the spec describes.
+        && (request.resource.data.status != 'scheduled'
+            || resource.data.sellerId == request.auth.uid)
+        // `completed` needs mutual confirmation, which arrives in M7. Until
+        // that flow exists, nobody reaches it from the client.
+        && request.resource.data.status in
+             ['queued', 'onHold', 'proposedTime', 'scheduled', 'cancelled', 'expired'];
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        function parent() {
+          return get(/databases/$(database)/documents/requests/$(requestId)).data;
+        }
+        function inThread() {
+          return signedIn()
+            && (parent().buyerId == request.auth.uid || parent().sellerId == request.auth.uid);
+        }
+        function counterparty() {
+          return parent().buyerId == request.auth.uid ? parent().sellerId : parent().buyerId;
+        }
+
+        allow read: if inThread();
+        allow create: if inThread()
+          && isUser(request.resource.data.senderId)
+          && !exists(/databases/$(database)/documents/users/$(counterparty())/blocked/$(request.auth.uid));
+        allow update, delete: if false;
+      }
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if true;
+
+      // Written by the counterparty of a completed trade, once. Immutable
+      // afterward -- an editable review is a review that can be traded away
+      // during a dispute.
+      allow create: if signedIn()
+        && isUser(request.resource.data.reviewerId)
+        && request.resource.data.reviewerId != request.resource.data.revieweeId
+        && request.resource.data.rating is number
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5
+        && exists(/databases/$(database)/documents/requests/$(request.resource.data.requestId))
+        && get(/databases/$(database)/documents/requests/$(request.resource.data.requestId)).data.status == 'completed'
+        && (get(/databases/$(database)/documents/requests/$(request.resource.data.requestId)).data.buyerId == request.auth.uid
+            || get(/databases/$(database)/documents/requests/$(request.resource.data.requestId)).data.sellerId == request.auth.uid);
+
+      allow update, delete: if false;
+    }
+
+    // Anything not matched above is denied.
+  }
+}

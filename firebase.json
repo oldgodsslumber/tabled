@@ -1,0 +1,70 @@
+{
+  "//": [
+    "Tabled uses FIRESTORE, not the Realtime Database. They are different",
+    "products, both have a 'Rules' tab in the console, and their rule languages",
+    "are not interchangeable: Firestore rules are the rules_version/service DSL,",
+    "Realtime Database rules are JSON. Pasting one into the other's editor gives",
+    "'Line 1: Parse error' with no further explanation.",
+    "",
+    "The database.rules.json below exists only to hold the unused Realtime",
+    "Database instance shut. Nothing in the app reads or writes it."
+  ],
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "database": {
+    "rules": "database.rules.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "functions": {
+    "source": "functions",
+    "runtime": "nodejs20",
+    "ignore": ["node_modules", ".git", "*.log"]
+  },
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "firestore.rules",
+      "firestore.indexes.json",
+      "storage.rules",
+      "functions/**",
+      "**/.*",
+      "**/node_modules/**",
+      "*.md"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "//": "The app shell must never be cached — routing is hash-based, so a stale index.html serves stale ?v= stamps and every JS file with it.",
+        "source": "/index.html",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache, max-age=0" }
+        ]
+      },
+      {
+        "//": "Everything else is cache-busted by its ?v= query string, so it can be cached hard.",
+        "source": "**/*.@(js|css)",
+        "headers": [
+          { "key": "Cache-Control", "value": "public, max-age=31536000" }
+        ]
+      }
+    ]
+  },
+  "emulators": {
+    "auth": { "port": 9099 },
+    "functions": { "port": 5001 },
+    "firestore": { "port": 8080 },
+    "storage": { "port": 9199 },
+    "hosting": { "port": 5000 },
+    "ui": { "enabled": true }
+  }
+}

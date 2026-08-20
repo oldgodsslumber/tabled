@@ -1,0 +1,12 @@
+# Normalize to LF in the repository. Without this, working on Windows commits
+# CRLF into files that tooling reads directly — Firebase rules, JSON configs —
+# and every checkout on another machine shows the whole file as modified.
+* text=auto eol=lf
+
+# Binary — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
