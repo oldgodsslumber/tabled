@@ -1,9 +1,9 @@
 {
   "name": "tabled-functions",
-  "description": "Cloud Functions for Tabled — BGG proxy, geocoding, counters, hot scores, auto-hide.",
+  "description": "Cloud Functions for Tabled \u2014 BGG proxy, geocoding, counters, hot scores, auto-hide.",
   "private": true,
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "index.js",
   "scripts": {
@@ -14,6 +14,7 @@
   "dependencies": {
     "firebase-admin": "^12.6.0",
     "firebase-functions": "^6.1.0",
-    "fast-xml-parser": "^4.5.0"
+    "fast-xml-parser": "^4.5.0",
+    "stripe": "^17.4.0"
   }
 }

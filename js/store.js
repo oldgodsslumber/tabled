@@ -760,6 +760,19 @@ window.Store = (function () {
           qs.forEach(function (s) { out.push(s.data().requestId); });
           return out;
         }).catch(function () { return []; });
+      },
+
+      /* ---- Verification fee (M8) ----
+       * Returns a Stripe Checkout URL to redirect to. Nothing about payment is
+       * decided here or anywhere else on the client — only the signed webhook
+       * may mark a fee paid. */
+      startFeeCheckout: function (requestId) {
+        return callable('createFeeCheckoutSession', {
+          requestId: requestId,
+          /* Validated server-side against an allowlist. Sent so a local build
+           * returns to localhost rather than production. */
+          returnUrl: location.origin
+        });
       }
     };
   }
@@ -1438,6 +1451,31 @@ window.Store = (function () {
           .map(function (r) { return r.requestId; }));
       },
 
+      /* Demo mode has no Stripe. Settling directly is honest here precisely
+       * because it is obviously fake — there is no card, no session, and the
+       * banner says so. It exercises the badge recompute, which is the part
+       * with actual logic in it. */
+      startFeeCheckout: function (requestId) {
+        var r = find(requestId);
+        if (!r) return Promise.reject(new Error('No such trade'));
+        if (r.sellerId !== myUid) return Promise.reject(new Error('Only the seller pays this fee'));
+        if (r.status !== 'completed') return Promise.reject(new Error('That trade is not complete'));
+        if (r.feePaid) return Promise.reject(new Error('That trade is already settled'));
+
+        r.feePaid = true;
+        r.feePaidAt = Date.now();
+        r.feeAmountCents = CFG.FEE.cents;
+
+        var unpaid = db.requests.filter(function (x) {
+          return x.sellerId === r.sellerId && x.status === 'completed' && x.feePaid === false;
+        });
+        var u = db.users[r.sellerId];
+        if (u) u.verifiedSeller = unpaid.length === 0;
+
+        save();
+        return Promise.resolve({ demo: true });
+      },
+
       /* Stands in for the onSlotHoldChange trigger. */
       releaseSlotIfDropped: function (r, wasHolding) {
         if (!wasHolding) return;
@@ -1602,6 +1640,15 @@ window.Store = (function () {
 
     /* ---- completion & reviews (M7) ---- */
     confirmSold: function (requestId) { return backend.confirmSold(requestId); },
+    startFeeCheckout: function (requestId) { return backend.startFeeCheckout(requestId); },
+
+    /* Completed trades of mine, as SELLER, that still owe a fee. The buyer
+     * never owes anything, so this is deliberately one-sided. */
+    unpaidFees: function () {
+      return myRequests.filter(function (r) {
+        return r.sellerId === myUid && r.status === 'completed' && r.feePaid === false;
+      });
+    },
     createReview: function (review) { return backend.createReview(review); },
     getReviews: function (revieweeId) { return backend.getReviews(revieweeId); },
     getMyReviewedRequestIds: function () { return backend.getMyReviewedRequestIds(myUid); },

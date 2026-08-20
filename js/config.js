@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260820c';
+  var BUILD = '20260820d';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -195,6 +195,27 @@ window.CFG = (function () {
     return QUEUE.openStatuses.indexOf(status) !== -1;
   }
 
+  /* ---- Verification fee (M8) ---------------------------------------------
+   * The fee does NOT gate the sale. The app has no visibility into cash
+   * changing hands outside it, so gating on the sale would be unenforceable
+   * theatre. It gates a status the app fully controls: whether a profile shows
+   * "Verified".
+   *
+   * This is a seller-to-platform charge. The actual game sale is never touched
+   * by the app, never routed through Stripe, never processed here.
+   *
+   * Display copy only. The amount that is actually charged lives in
+   * functions/index.js, because a client-supplied price is a client-chosen
+   * price. */
+  var FEE = {
+    label: '$0.25',
+    cents: 25,
+    /* Mirrors config/global.feeWaiverEndDate, which is the value that actually
+     * decides. Used here only to explain the waiver in the UI; a stale copy
+     * changes what people are told, never what they are charged. */
+    waiverEndsLabel: 'December 31, 2026'
+  };
+
   /* ---- Distance ----------------------------------------------------------
    * Radius options for the "near me" filter, in miles. */
   var RADII = [5, 10, 25, 50, 100];
@@ -243,6 +264,7 @@ window.CFG = (function () {
     GEO: GEO,
     inUsBox: inUsBox,
     QUEUE: QUEUE,
+    FEE: FEE,
     isOpenRequest: isOpenRequest,
     REPORT_REASONS: REPORT_REASONS,
     SAFETY: SAFETY,

@@ -20,7 +20,7 @@
  * in the browser rather than anything that names the actual problem.
  */
 
-const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { onDocumentCreated, onDocumentUpdated } = require('firebase-functions/v2/firestore');
 const { defineSecret } = require('firebase-functions/params');
@@ -199,9 +199,16 @@ exports.geocodeArea = onCall({ secrets: [GEOCODING_KEY] }, async (req) => {
   if (text.length < 2) throw new HttpsError('invalid-argument', 'Area text is too short');
 
   const key = GEOCODING_KEY.value();
-  if (!key) {
+  /* Secret Manager has no concept of an empty secret, and defineSecret refuses
+   * to DEPLOY at all if the secret is absent — which would block every other
+   * function in this file over one unconfigured key. So the secret may hold the
+   * sentinel below as a placeholder, and that is treated as "not configured"
+   * rather than sent to Google as a real key (which would fail with an opaque
+   * REQUEST_DENIED and look like an outage). */
+  if (!key || key === 'PLACEHOLDER_SET_A_REAL_KEY') {
     throw new HttpsError('failed-precondition',
-      'GEOCODING_API_KEY is not set. Run: firebase functions:secrets:set GEOCODING_API_KEY');
+      'Geocoding is not configured yet. Set a real key with: ' +
+      'firebase functions:secrets:set GEOCODING_API_KEY');
   }
 
   /* `components=country:US` is a HARD FILTER, not a bias — Google returns
@@ -1090,6 +1097,214 @@ exports.onReviewCreate = onDocumentCreated('reviews/{reviewId}', async (event) =
     reviewCount: ratings.length
   });
 });
+
+/* =========================================================================
+ * M8 — Trade verification fees
+ *
+ * The mechanism, restated because it is easy to get backwards: the fee does
+ * NOT gate the sale. The app has no visibility into cash changing hands
+ * outside it, so gating on the sale would be unenforceable theatre. It gates
+ * a status the app fully controls — whether a seller's profile shows
+ * "Verified".
+ *
+ * This is a seller-to-platform transaction. The actual board game sale — the
+ * $30, the $50, whatever the game goes for — is never touched by this app,
+ * never routed through Stripe, never processed here. That line does not move.
+ *
+ * Two secrets, both in Secret Manager, never in the repo:
+ *   STRIPE_SECRET_KEY      creates Checkout Sessions
+ *   STRIPE_WEBHOOK_SECRET  verifies that an incoming webhook is really Stripe
+ * ========================================================================= */
+
+const STRIPE_SECRET = defineSecret('STRIPE_SECRET_KEY');
+const STRIPE_WEBHOOK_SECRET = defineSecret('STRIPE_WEBHOOK_SECRET');
+
+/* Same sentinel trick as GEOCODING_API_KEY: defineSecret blocks deployment of
+ * the whole codebase if a secret is absent, so an unconfigured integration
+ * would take every other function down with it. A placeholder value deploys and
+ * fails loudly at call time instead. */
+const SECRET_PLACEHOLDER = 'PLACEHOLDER_SET_A_REAL_KEY';
+
+const FEE_CENTS = 25;
+const FEE_CURRENCY = 'usd';
+
+/* Where Stripe is allowed to send someone back to. An open redirect here would
+ * let anyone turn a Tabled checkout link into a phishing hop, so the return URL
+ * is validated against this list rather than trusted from the client. */
+const RETURN_ORIGINS = [
+  'https://tabled-2ad11.web.app',
+  'https://tabled-2ad11.firebaseapp.com',
+  'https://oldgodsslumber.github.io',
+  'http://localhost:8791',
+  'http://127.0.0.1:8791'
+];
+
+function safeReturnOrigin(candidate) {
+  const raw = String(candidate || '');
+  const hit = RETURN_ORIGINS.find((o) => raw.indexOf(o) === 0);
+  return hit || RETURN_ORIGINS[0];
+}
+
+function stripeClient() {
+  const key = STRIPE_SECRET.value();
+  if (!key || key === SECRET_PLACEHOLDER) {
+    throw new HttpsError('failed-precondition',
+      'Payments are not configured yet. Set a real key with: ' +
+      'firebase functions:secrets:set STRIPE_SECRET_KEY');
+  }
+  /* Required lazily so a missing dependency or bad key cannot break the module
+   * load for every other function in this file. */
+  return require('stripe')(key);
+}
+
+/* ---- createFeeCheckoutSession -------------------------------------------- */
+
+exports.createFeeCheckoutSession = onCall({ secrets: [STRIPE_SECRET] }, async (req) => {
+  requireAuth(req);
+  const uid = req.auth.uid;
+  const requestId = String((req.data || {}).requestId || '');
+  if (!requestId) throw new HttpsError('invalid-argument', 'requestId is required');
+
+  const snap = await db.collection('requests').doc(requestId).get();
+  if (!snap.exists) throw new HttpsError('not-found', 'No such trade');
+  const r = snap.data();
+
+  /* The fee is the SELLER's, not the buyer's. */
+  if (r.sellerId !== uid) {
+    throw new HttpsError('permission-denied', 'Only the seller pays this fee');
+  }
+  if (r.status !== 'completed') {
+    throw new HttpsError('failed-precondition', 'That trade is not complete');
+  }
+  if (r.feePaid === true) {
+    /* Already settled, whether by payment or by the launch waiver. Charging
+     * twice for one trade would be a genuine wrong, not just a duplicate. */
+    throw new HttpsError('already-exists', 'That trade is already settled');
+  }
+
+  const origin = safeReturnOrigin((req.data || {}).returnUrl);
+  const stripe = stripeClient();
+
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    line_items: [{
+      price_data: {
+        currency: FEE_CURRENCY,
+        unit_amount: FEE_CENTS,
+        product_data: {
+          name: 'Tabled verification fee',
+          description: 'Keeps your Verified badge current for ' +
+            (r.gameName || 'this trade') + '.'
+        }
+      },
+      quantity: 1
+    }],
+    /* Both of these are echoed back on the webhook. metadata is what the
+     * handler actually reads — client_reference_id is there so a human staring
+     * at the Stripe dashboard can tell which trade a payment belongs to. */
+    client_reference_id: requestId,
+    metadata: { requestId, sellerId: uid },
+    success_url: origin + '/index.html#/dashboard?fee=paid',
+    cancel_url: origin + '/index.html#/dashboard?fee=cancelled'
+  });
+
+  /* Recorded for support and reconciliation. Not used to decide anything —
+   * only the signed webhook may mark a fee paid. */
+  await snap.ref.update({
+    feeCheckoutSessionId: session.id,
+    feeCheckoutStartedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  return { url: session.url, sessionId: session.id };
+});
+
+/* ---- stripeWebhook -------------------------------------------------------
+ * The ONLY thing in the system that may set feePaid = true by payment.
+ *
+ * Signature verification is the entire security model here: this endpoint is
+ * public, and without it anyone could POST a fake "payment succeeded" and mint
+ * themselves a Verified badge. Two details make or break it:
+ *
+ *   1. It must verify against the RAW request body. Firebase parses JSON
+ *      bodies by default, and a re-serialised body produces a different
+ *      signature — which fails in a way that looks like a Stripe bug rather
+ *      than our own. req.rawBody is the untouched buffer.
+ *   2. It must run BEFORE anything trusts the payload. Nothing above the
+ *      constructEvent call may read event data.
+ */
+exports.stripeWebhook = onRequest(
+  { secrets: [STRIPE_SECRET, STRIPE_WEBHOOK_SECRET] },
+  async (request, response) => {
+    const whSecret = STRIPE_WEBHOOK_SECRET.value();
+    if (!whSecret || whSecret === SECRET_PLACEHOLDER) {
+      console.error('stripeWebhook called but STRIPE_WEBHOOK_SECRET is not configured');
+      response.status(503).send('Payments not configured');
+      return;
+    }
+
+    let event;
+    try {
+      const stripe = stripeClient();
+      event = stripe.webhooks.constructEvent(
+        request.rawBody,
+        request.headers['stripe-signature'],
+        whSecret
+      );
+    } catch (err) {
+      /* A failed signature is the mechanism working, not an outage. Answer 400
+       * so Stripe stops retrying, and never log the body. */
+      console.warn('stripeWebhook rejected an unsigned or malformed event:', err.message);
+      response.status(400).send('Invalid signature');
+      return;
+    }
+
+    if (event.type !== 'checkout.session.completed') {
+      /* Acknowledge everything else so Stripe does not retry events we simply
+       * do not act on. */
+      response.status(200).send('Ignored');
+      return;
+    }
+
+    const session = event.data.object;
+    const requestId = (session.metadata && session.metadata.requestId) ||
+      session.client_reference_id;
+    if (!requestId) {
+      console.error('checkout.session.completed with no requestId', session.id);
+      response.status(200).send('No request reference');
+      return;
+    }
+
+    try {
+      const ref = db.collection('requests').doc(requestId);
+      const snap = await ref.get();
+      if (!snap.exists) {
+        console.error('fee paid for a request that no longer exists', requestId);
+        response.status(200).send('Unknown request');
+        return;
+      }
+      const r = snap.data();
+
+      /* Idempotent by construction: Stripe retries webhooks, and setting a
+       * boolean that is already true costs nothing and changes nothing. */
+      await ref.update({
+        feePaid: true,
+        feePaidAt: admin.firestore.FieldValue.serverTimestamp(),
+        feeStripeSessionId: session.id,
+        feeAmountCents: session.amount_total || FEE_CENTS
+      });
+
+      await recomputeVerified(r.sellerId);
+      console.log(`fee settled for request ${requestId}, seller ${r.sellerId}`);
+      response.status(200).send('OK');
+    } catch (err) {
+      /* A 500 makes Stripe retry, which is what we want for a transient
+       * Firestore failure — the payment already happened and the badge must
+       * eventually reflect it. */
+      console.error('stripeWebhook failed to record payment', err);
+      response.status(500).send('Retry');
+    }
+  }
+);
 
 /* ---- shared -------------------------------------------------------------- */
 

@@ -28,7 +28,7 @@ window.App = (function () {
     listing:  { render: function (root, p) { ListingView.render(root, p); } },
     create:   { render: function (root, p) { CreateView.render(root, p); }, nav: 'sell', auth: true },
     edit:     { render: function (root, p) { CreateView.render(root, p); }, auth: true },
-    dashboard:{ render: function (root, p) { DashboardView.render(root); }, nav: 'inbox', auth: true },
+    dashboard:{ render: function (root, p) { DashboardView.render(root, p); }, nav: 'inbox', auth: true },
     thread:   { render: function (root, p) { ThreadView.render(root, p); }, nav: 'inbox', auth: true },
     profile:  { render: function (root, p) { ProfileView.render(root, p); } },
     me:       { render: function (root, p) { ProfileView.render(root, {}); }, nav: 'me', auth: true },
