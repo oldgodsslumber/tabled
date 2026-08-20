@@ -94,10 +94,11 @@ window.ProfileView = (function () {
 
         '<section class="block">' +
           '<h2>Reviews</h2>' +
-          '<p class="fine">Reviews unlock when a trade is confirmed by both sides — that flow ' +
-            'arrives with M7, so nothing here yet.</p>' +
+          '<div id="p-reviews">' + U.spinner('') + '</div>' +
         '</section>' +
       '</div>';
+
+    loadReviews(user.id);
 
     if (!mine) {
       Safety.wireMenu(root, {
@@ -126,11 +127,45 @@ window.ProfileView = (function () {
     });
   }
 
+  /* Reviews are fetch-once: they never change after posting, so a live
+   * subscription would stream data that is by definition immutable. */
+  function loadReviews(uid) {
+    Store.getReviews(uid).then(function (reviews) {
+      var host = U.$('#p-reviews');
+      if (!host) return;
+      if (!reviews.length) {
+        host.innerHTML = '<p class="fine">No reviews yet. They unlock when a trade is ' +
+          'confirmed by both sides.</p>';
+        return;
+      }
+      host.innerHTML = reviews.map(function (r) {
+        return '<div class="review">' +
+          '<div class="review-head">' +
+            U.avatar({ displayName: r.reviewerName, photoURL: r.reviewerPhoto }, '') +
+            '<div class="grow">' +
+              '<strong>' + U.esc(r.reviewerName || 'Someone') + '</strong>' +
+              '<span class="fine">' +
+                (r.gameName ? U.esc(r.gameName) + ' \u00b7 ' : '') +
+                U.esc(U.ago(r.createdAt)) +
+              '</span>' +
+            '</div>' +
+            '<span class="stars">' + stars(r.rating) + '</span>' +
+          '</div>' +
+          (r.comment ? '<p class="review-body">' + U.esc(r.comment) + '</p>' : '') +
+        '</div>';
+      }).join('');
+    }).catch(function (err) {
+      console.error('[tabled] reviews load failed', err);
+      var host = U.$('#p-reviews');
+      if (host) host.innerHTML = '<p class="fine">Could not load reviews.</p>';
+    });
+  }
+
   function stars(n) {
-    var full = Math.round(n);
+    var full = Math.round(Number(n) || 0);
     var s = '';
     for (var i = 1; i <= 5; i++) s += (i <= full ? '★' : '☆');
-    return '<span class="stars" aria-label="' + n.toFixed(1) + ' out of 5">' + s + '</span>';
+    return '<span class="stars" aria-label="' + full + ' out of 5">' + s + '</span>';
   }
 
   /* ---- Settings ---------------------------------------------------------- */

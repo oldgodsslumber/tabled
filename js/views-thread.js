@@ -207,8 +207,10 @@ window.ThreadView = (function () {
   function drawScheduling(root, req) {
     var host = U.$('#t-sched', root);
     if (!host) return;
-    if (lastRenderedStatus === req.status + '|' + String(req.proposedTime)) return;
-    lastRenderedStatus = req.status + '|' + String(req.proposedTime);
+    var key = [req.status, req.proposedTime, req.buyerConfirmedAt,
+      req.sellerConfirmedAt, req.closedReason].join('|');
+    if (lastRenderedStatus === key) return;
+    lastRenderedStatus = key;
 
     var amSeller = req.sellerId === Store.uid();
     var html = '';
@@ -264,22 +266,47 @@ window.ThreadView = (function () {
         '</div>';
 
     } else if (req.status === 'scheduled') {
+      /* Mutual confirmation. The app can never see money change hands outside
+       * it, but it can see two people independently agreeing that it did — and
+       * that agreement is the one thing neither side can fake alone. */
+      var mineDone = !!Store.myConfirmation(req);
+      var theirsDone = !!Store.theirConfirmation(req);
+      var otherName = amSeller ? (req.buyerName || 'the buyer') : (req.sellerName || 'the seller');
+
       html =
         '<div class="sched confirmed">' +
           '<p class="sched-state">✓ Confirmed for <strong>' +
             U.esc(whenLabel(req.scheduledTime)) + '</strong>' +
             (req.method === 'shipping' ? ' — shipping' : ' — meeting up') + '</p>' +
-          '<p class="fine">Marking the trade complete (and leaving reviews) arrives with a ' +
-            'later milestone. For now, this is the handshake.</p>' +
-          '<button class="btn ghost small" data-act="propose">Change the time</button>' +
+          (mineDone
+            ? '<p class="fine">You\'ve marked this done. Waiting on ' +
+              U.esc(otherName) + ' to confirm before it counts.</p>'
+            : (theirsDone
+                ? '<p class="fine">' + U.esc(otherName) + ' has marked this done. ' +
+                  'Confirm to complete the trade.</p>'
+                : '<p class="fine">Once you\'ve actually swapped the game, both of you ' +
+                  'confirm here. That\'s what records the trade and opens reviews.</p>')) +
+          (mineDone
+            ? '<span class="badge verified">You confirmed</span>'
+            : '<button class="btn small" data-act="sold">' +
+              (theirsDone ? 'Confirm — completes the trade' : 'Mark as done') + '</button>') +
+          (mineDone ? '' :
+            '<button class="btn ghost small" data-act="propose">Change the time</button>') +
         '</div>';
 
     } else if (req.status === 'cancelled' || req.status === 'expired') {
-      html = '<div class="sched closed"><p class="sched-state">This request was ' +
-        U.esc(req.status) + '.</p></div>';
+      html = '<div class="sched closed"><p class="sched-state">' +
+        (req.closedReason === 'itemSold'
+          ? 'This game sold to someone else.'
+          : 'This request was ' + U.esc(req.status) + '.') +
+        '</p></div>';
 
     } else if (req.status === 'completed') {
-      html = '<div class="sched confirmed"><p class="sched-state">✓ Trade completed.</p></div>';
+      html =
+        '<div class="sched confirmed">' +
+          '<p class="sched-state">✓ Trade completed.</p>' +
+          '<button class="btn small" data-act="review">Leave a review</button>' +
+        '</div>';
     }
 
     if (['cancelled', 'expired', 'completed'].indexOf(req.status) === -1) {
@@ -293,6 +320,8 @@ window.ThreadView = (function () {
       var act = t.dataset.act;
       if (act === 'propose') proposeDialog(req);
       else if (act === 'slots') slotDialog(req);
+      else if (act === 'sold') confirmSold(req, t);
+      else if (act === 'review') reviewDialog(req);
       else if (act === 'confirm') respond(req, true);
       else if (act === 'decline') respond(req, false);
       else if (act === 'cancel') cancel(req, amSeller);
@@ -557,6 +586,106 @@ window.ThreadView = (function () {
     });
   }
 
+  /* ---- Completion (M7) ---------------------------------------------------- */
+
+  function confirmSold(req, btn) {
+    var theirsDone = !!Store.theirConfirmation(req);
+    U.confirm(
+      theirsDone ? 'Complete this trade?' : 'Mark this as done?',
+      theirsDone
+        ? 'This completes the trade for both of you. It counts toward both trade '
+          + 'histories and opens reviews. This cannot be undone.'
+        : 'Only do this once you actually have the game (or have handed it over). '
+          + 'The trade completes when the other person confirms too.',
+      theirsDone ? 'Complete trade' : 'Mark as done'
+    ).then(function (ok) {
+      if (!ok) return;
+      btn.disabled = true;
+      btn.textContent = 'Confirming\u2026';
+      Store.confirmSold(req.id).then(function (res) {
+        if (res.completed) {
+          U.toast('Trade completed \u2014 leave each other a review');
+          reviewDialog(req);
+        } else {
+          U.toast('Marked done \u2014 waiting on the other side');
+        }
+      }).catch(function (err) {
+        console.error('[tabled] confirmSold failed', err);
+        U.toast((err && err.message) || 'Could not confirm', 'bad');
+        btn.disabled = false;
+        btn.textContent = theirsDone ? 'Confirm \u2014 completes the trade' : 'Mark as done';
+      });
+    });
+  }
+
+  /* ---- Reviews (M7) ------------------------------------------------------- */
+
+  function reviewDialog(req) {
+    var amSeller = req.sellerId === Store.uid();
+    var revieweeId = amSeller ? req.buyerId : req.sellerId;
+    var revieweeName = amSeller ? req.buyerName : req.sellerName;
+    var me = Store.me() || {};
+    var chosen = 0;
+
+    var m = U.modal('Review ' + (revieweeName || 'them'),
+      '<div class="rate" role="radiogroup" aria-label="Rating">' +
+        [1, 2, 3, 4, 5].map(function (n) {
+          return '<button class="star" data-rate="' + n + '" ' +
+            'aria-label="' + n + ' star' + (n > 1 ? 's' : '') + '">\u2606</button>';
+        }).join('') +
+      '</div>' +
+      '<p class="fine rate-hint">Tap to rate</p>' +
+      '<label class="field">' +
+        '<span>Anything worth saying? <em>optional</em></span>' +
+        '<textarea id="rv-text" rows="3" maxlength="400" ' +
+          'placeholder="Turned up on time, game was exactly as described"></textarea>' +
+      '</label>' +
+      '<p class="fine">Reviews are public and permanent \u2014 they can\'t be edited or ' +
+        'deleted once posted. That is what makes them worth anything.</p>' +
+      '<div class="modal-actions">' +
+        '<button class="btn ghost" data-act="later">Not now</button>' +
+        '<button class="btn" data-act="post">Post review</button>' +
+      '</div>');
+
+    var hint = U.$('.rate-hint', m.el);
+    var LABELS = ['', 'Poor', 'Not great', 'Fine', 'Good', 'Excellent'];
+
+    U.on(m.el, '[data-rate]', function (e, t) {
+      chosen = Number(t.dataset.rate);
+      U.$$('.star', m.el).forEach(function (b) {
+        var on = Number(b.dataset.rate) <= chosen;
+        b.textContent = on ? '\u2605' : '\u2606';
+        b.classList.toggle('on', on);
+      });
+      hint.textContent = LABELS[chosen];
+    });
+
+    U.on(m.el, '[data-act]', function (e, t) {
+      if (t.dataset.act === 'later') { m.close(); return; }
+      if (!chosen) { U.toast('Pick a rating first', 'warn'); return; }
+      t.disabled = true;
+      t.textContent = 'Posting\u2026';
+      Store.createReview({
+        requestId: req.id,
+        reviewerId: Store.uid(),
+        revieweeId: revieweeId,
+        reviewerName: me.displayName || '',
+        reviewerPhoto: me.photoURL || null,
+        gameName: req.gameName || '',
+        rating: chosen,
+        comment: U.$('#rv-text', m.el).value.trim()
+      }).then(function () {
+        m.close();
+        U.toast('Review posted');
+      }).catch(function (err) {
+        console.error('[tabled] review failed', err);
+        U.toast((err && err.message) || 'Could not post that review', 'bad');
+        t.disabled = false;
+        t.textContent = 'Post review';
+      });
+    });
+  }
+
   /* ---- Messages ---------------------------------------------------------- */
 
   function drawMessages(root, msgs, req) {
@@ -615,5 +744,5 @@ window.ThreadView = (function () {
     return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
   }
 
-  return { render: render, teardown: teardown };
+  return { render: render, teardown: teardown, reviewDialog: reviewDialog };
 })();

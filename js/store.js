@@ -704,6 +704,62 @@ window.Store = (function () {
         return callable('bookSlot', {
           requestId: requestId, date: date, startTime: startTime
         });
+      },
+
+      /* ---- Completion & reviews (M7) ---- */
+
+      /* Marks MY side of the trade. Completion happens server-side only when
+       * both sides have done it — the client is never told to "complete" a
+       * trade, only to say that it did what it said it would. */
+      confirmSold: function (requestId) {
+        return callable('confirmSold', { requestId: requestId });
+      },
+
+      /* Deterministic id: {requestId}_{reviewerId}. That is what makes a review
+       * once-only — rules cannot count documents, but they can deny an update,
+       * and a second attempt at the same id IS an update. */
+      createReview: function (review) {
+        var id = review.requestId + '_' + review.reviewerId;
+        return fb.setDoc(docRef('reviews', id), {
+          requestId: review.requestId,
+          reviewerId: review.reviewerId,
+          revieweeId: review.revieweeId,
+          reviewerName: review.reviewerName || '',
+          reviewerPhoto: review.reviewerPhoto || null,
+          gameName: review.gameName || '',
+          rating: review.rating,
+          comment: review.comment || '',
+          createdAt: fb.serverTimestamp()
+        }).then(function () { return id; });
+      },
+
+      getReviews: function (revieweeId) {
+        return fb.getDocs(fb.query(col('reviews'),
+          fb.where('revieweeId', '==', revieweeId),
+          fb.orderBy('createdAt', 'desc'),
+          fb.limit(50)
+        )).then(function (qs) {
+          var out = [];
+          qs.forEach(function (s) { var d = s.data(); d.id = s.id; out.push(d); });
+          return out;
+        }).catch(function (err) {
+          console.warn('[tabled] reviews read failed', err);
+          return [];
+        });
+      },
+
+      /* Which of my completed trades have I already reviewed? Read once and
+       * used to decide whether the dashboard shows a prompt — cheaper than a
+       * per-row existence check. */
+      getMyReviewedRequestIds: function (uid) {
+        return fb.getDocs(fb.query(col('reviews'),
+          fb.where('reviewerId', '==', uid),
+          fb.limit(200)
+        )).then(function (qs) {
+          var out = [];
+          qs.forEach(function (s) { out.push(s.data().requestId); });
+          return out;
+        }).catch(function () { return []; });
       }
     };
   }
@@ -730,6 +786,7 @@ window.Store = (function () {
           parsed.requests = parsed.requests || [];
           parsed.messages = parsed.messages || {};
           parsed.slots = parsed.slots || {};
+          parsed.reviews = parsed.reviews || {};
           return parsed;
         }
       } catch (e) { /* fall through to seed */ }
@@ -827,7 +884,7 @@ window.Store = (function () {
 
       return {
         users: users, games: games, listings: listings, entries: entries,
-        blocked: {}, reports: {}, requests: [], messages: {}, slots: {}
+        blocked: {}, reports: {}, requests: [], messages: {}, slots: {}, reviews: {}
       };
     }
 
@@ -1271,6 +1328,116 @@ window.Store = (function () {
         return Promise.resolve({ slotId: id, startsAtMs: startsAtMs, requestId: requestId });
       },
 
+      /* ---- Completion & reviews (M7), demo edition ----
+       * Mirrors confirmSold, including the part that matters: nothing
+       * completes until BOTH sides have confirmed. */
+      confirmSold: function (requestId) {
+        var r = find(requestId);
+        if (!r) return Promise.reject(new Error('No such request'));
+        var isBuyer = r.buyerId === myUid;
+        var isSeller = r.sellerId === myUid;
+        if (!isBuyer && !isSeller) return Promise.reject(new Error('Not your trade'));
+        if (r.status === 'completed') return Promise.resolve({ already: true, completed: true });
+        if (r.status !== 'scheduled') {
+          return Promise.reject(new Error('Agree a time first - confirming comes after that'));
+        }
+
+        var field = isBuyer ? 'buyerConfirmedAt' : 'sellerConfirmedAt';
+        if (r[field]) return Promise.resolve({ already: true, completed: false });
+        var other = isBuyer ? 'sellerConfirmedAt' : 'buyerConfirmedAt';
+        var now = Date.now();
+        r[field] = now;
+        r.updatedAt = now;
+
+        if (!r[other]) {
+          save();
+          return Promise.resolve({
+            already: false, completed: false, waitingOn: isBuyer ? 'seller' : 'buyer'
+          });
+        }
+
+        r.status = 'completed';
+        r.completedAt = now;
+        /* No config doc in demo mode, so the waiver is treated as active -
+         * same default the callable uses, and for the same reason. */
+        r.feePaid = true;
+        r.feeWaived = true;
+        this.releaseSlotIfDropped(r, true);
+
+        var entry = (db.entries[r.listingId] || []).filter(function (e) {
+          return e.id === r.gameEntryId;
+        })[0];
+        if (entry) {
+          entry.status = 'sold';
+          entry.currentHoldRequestId = null;
+          entry.holdExpiresAt = null;
+          entry.queueCount = 0;
+        }
+
+        var closed = 0;
+        db.requests.forEach(function (x) {
+          if (x.id === requestId) return;
+          if (x.gameEntryId !== r.gameEntryId) return;
+          if (!CFG.isOpenRequest(x.status)) return;
+          x.status = 'expired';
+          x.closedReason = 'itemSold';
+          x.updatedAt = now;
+          closed++;
+        });
+
+        [r.buyerId, r.sellerId].forEach(function (uid) {
+          var u = db.users[uid];
+          if (u) u.tradeCount = (u.tradeCount || 0) + 1;
+        });
+
+        var all = db.entries[r.listingId] || [];
+        if (all.length && all.every(function (e) { return e.status === 'sold'; })) {
+          var l = db.listings.filter(function (x) { return x.id === r.listingId; })[0];
+          if (l) { l.status = 'archived'; l.archivedAt = now; }
+        }
+
+        save();
+        return Promise.resolve({ already: false, completed: true, closedOthers: closed });
+      },
+
+      createReview: function (review) {
+        db.reviews = db.reviews || {};
+        var id = review.requestId + '_' + review.reviewerId;
+        if (db.reviews[id]) return Promise.reject(new Error('You already reviewed this trade'));
+        db.reviews[id] = Object.assign({ id: id, createdAt: Date.now() }, review);
+
+        /* Stands in for onReviewCreate: recompute from the whole set rather
+         * than folding into a running average, which drifts on any retry. */
+        var ratings = Object.keys(db.reviews)
+          .map(function (k) { return db.reviews[k]; })
+          .filter(function (r) { return r.revieweeId === review.revieweeId; })
+          .map(function (r) { return Number(r.rating); })
+          .filter(function (n) { return n >= 1 && n <= 5; });
+        var u = db.users[review.revieweeId];
+        if (u && ratings.length) {
+          var avg = ratings.reduce(function (a, b) { return a + b; }, 0) / ratings.length;
+          u.avgRating = Math.round(avg * 100) / 100;
+          u.reviewCount = ratings.length;
+        }
+        save();
+        return Promise.resolve(id);
+      },
+
+      getReviews: function (revieweeId) {
+        var out = Object.keys(db.reviews || {})
+          .map(function (k) { return clone(db.reviews[k]); })
+          .filter(function (r) { return r.revieweeId === revieweeId; })
+          .sort(function (a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
+        return Promise.resolve(out);
+      },
+
+      getMyReviewedRequestIds: function (uid) {
+        return Promise.resolve(Object.keys(db.reviews || {})
+          .map(function (k) { return db.reviews[k]; })
+          .filter(function (r) { return r.reviewerId === uid; })
+          .map(function (r) { return r.requestId; }));
+      },
+
       /* Stands in for the onSlotHoldChange trigger. */
       releaseSlotIfDropped: function (r, wasHolding) {
         if (!wasHolding) return;
@@ -1432,6 +1599,27 @@ window.Store = (function () {
     },
 
     getBookedSlots: function (sellerId) { return backend.getBookedSlots(sellerId); },
+
+    /* ---- completion & reviews (M7) ---- */
+    confirmSold: function (requestId) { return backend.confirmSold(requestId); },
+    createReview: function (review) { return backend.createReview(review); },
+    getReviews: function (revieweeId) { return backend.getReviews(revieweeId); },
+    getMyReviewedRequestIds: function () { return backend.getMyReviewedRequestIds(myUid); },
+
+    /* Have I confirmed my side of this trade yet? Derived rather than stored
+     * per-viewer, since the request already carries both timestamps. */
+    myConfirmation: function (r) {
+      if (!r || !myUid) return null;
+      if (r.buyerId === myUid) return r.buyerConfirmedAt || null;
+      if (r.sellerId === myUid) return r.sellerConfirmedAt || null;
+      return null;
+    },
+    theirConfirmation: function (r) {
+      if (!r || !myUid) return null;
+      if (r.buyerId === myUid) return r.sellerConfirmedAt || null;
+      if (r.sellerId === myUid) return r.buyerConfirmedAt || null;
+      return null;
+    },
     bookSlot: function (requestId, date, startTime) {
       return backend.bookSlot(requestId, date, startTime);
     },

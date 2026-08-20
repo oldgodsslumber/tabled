@@ -903,6 +903,194 @@ exports.onSlotHoldChange = onDocumentUpdated('requests/{requestId}', async (even
   console.log(`released slot ${before.bookedSlotId} (request went to ${after.status})`);
 });
 
+/* =========================================================================
+ * M7 — Completion & trust
+ *
+ * A trade completes only when BOTH sides say it did. That is the whole point:
+ * the app can never observe money changing hands outside it, but it can
+ * observe two people independently agreeing, and that agreement cannot be
+ * faked by either one alone.
+ *
+ * Completion is what unlocks reviews and increments tradeCount — which is
+ * exactly why it can't be a client write. A seller able to mark their own
+ * trades complete could manufacture a trade history, and every trust signal
+ * on the profile becomes decorative.
+ * ========================================================================= */
+
+exports.confirmSold = onCall(async (req) => {
+  requireAuth(req);
+  const uid = req.auth.uid;
+  const requestId = String((req.data || {}).requestId || '');
+  if (!requestId) throw new HttpsError('invalid-argument', 'requestId is required');
+
+  const requestRef = db.collection('requests').doc(requestId);
+  const nowMs = Date.now();
+
+  const outcome = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(requestRef);
+    if (!snap.exists) throw new HttpsError('not-found', 'No such request');
+    const r = snap.data();
+
+    const isBuyer = r.buyerId === uid;
+    const isSeller = r.sellerId === uid;
+    if (!isBuyer && !isSeller) throw new HttpsError('permission-denied', 'Not your trade');
+    if (r.status === 'completed') return { already: true, completed: true };
+    if (r.status !== 'scheduled') {
+      throw new HttpsError('failed-precondition',
+        'Agree a time first — confirming comes after that');
+    }
+
+    const field = isBuyer ? 'buyerConfirmedAt' : 'sellerConfirmedAt';
+    if (r[field]) return { already: true, completed: false };
+
+    const otherField = isBuyer ? 'sellerConfirmedAt' : 'buyerConfirmedAt';
+    const bothNow = !!r[otherField];
+
+    const patch = {};
+    patch[field] = admin.firestore.Timestamp.fromMillis(nowMs);
+    patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+
+    if (!bothNow) {
+      tx.update(requestRef, patch);
+      return { already: false, completed: false, waitingOn: isBuyer ? 'seller' : 'buyer' };
+    }
+
+    /* ---- Both sides are in. Everything below happens atomically. ---- */
+
+    patch.status = 'completed';
+    patch.completedAt = admin.firestore.Timestamp.fromMillis(nowMs);
+
+    /* The launch waiver (M8). During it, completion satisfies the verification
+     * fee outright — no Stripe call, no prompt shown at all. Deciding it HERE
+     * rather than at fee time is what makes the spec's promise true: a trade
+     * completed during the waiver stays free forever, even after the cutoff.
+     *
+     * A missing config doc is treated as waived. The fee system does not exist
+     * yet, and defaulting to unpaid would strip the Verified badge off every
+     * seller the moment M8 ships. */
+    const cfg = await tx.get(db.collection('config').doc('global'));
+    const waiverEnd = cfg.exists && cfg.data().feeWaiverEndDate
+      ? cfg.data().feeWaiverEndDate.toMillis()
+      : Infinity;
+    patch.feePaid = nowMs < waiverEnd;
+    patch.feeWaived = patch.feePaid;
+
+    tx.update(requestRef, patch);
+
+    const entryRef = db.collection('listings').doc(r.listingId)
+      .collection('gameEntries').doc(r.gameEntryId);
+    tx.update(entryRef, {
+      status: 'sold',
+      currentHoldRequestId: null,
+      holdExpiresAt: null,
+      queueCount: 0
+    });
+
+    /* Anyone still queued behind this trade is waiting for something that no
+     * longer exists. Closing them explicitly is kinder than leaving them to
+     * find out when their hold silently lapses. */
+    const queued = await tx.get(
+      db.collection('requests')
+        .where('gameEntryId', '==', r.gameEntryId)
+        .where('status', 'in', OPEN_STATUSES)
+    );
+    let closed = 0;
+    queued.docs.forEach((doc) => {
+      if (doc.id === requestId) return;
+      tx.update(doc.ref, {
+        status: 'expired',
+        closedReason: 'itemSold',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      closed++;
+    });
+
+    /* tradeCount counts for BOTH people. A trade is symmetric — both sides
+     * turned up and did the thing. Written here because these fields are
+     * function-only in the rules for exactly this reason. */
+    tx.update(db.collection('users').doc(r.buyerId),
+      { tradeCount: admin.firestore.FieldValue.increment(1) });
+    tx.update(db.collection('users').doc(r.sellerId),
+      { tradeCount: admin.firestore.FieldValue.increment(1) });
+
+    return {
+      already: false, completed: true, closedOthers: closed,
+      listingId: r.listingId, sellerId: r.sellerId
+    };
+  });
+
+  /* Archival runs after the transaction, not inside it: deciding it needs a
+   * read of every sibling entry, and a transaction that reads a whole
+   * subcollection to settle one boolean is a contention magnet on a busy
+   * listing. Worst case here is a listing that stays 'active' with everything
+   * sold for a moment. */
+  if (outcome.completed && outcome.listingId) {
+    await archiveIfAllSold(outcome.listingId);
+    await recomputeVerified(outcome.sellerId);
+  }
+
+  return outcome;
+});
+
+/* A listing whose every game has sold has nothing left to show. Archived, not
+ * deleted — trade history and reviews point at it. */
+async function archiveIfAllSold(listingId) {
+  const entries = await db.collection('listings').doc(listingId)
+    .collection('gameEntries').get();
+  if (entries.empty) return;
+  if (!entries.docs.every((d) => d.data().status === 'sold')) return;
+  await db.collection('listings').doc(listingId).update({
+    status: 'archived',
+    archivedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+  console.log('listing ' + listingId + ' archived - every game sold');
+}
+
+/* verifiedSeller is a CURRENT-STANDING flag, not a threshold crossed once:
+ * true only while zero completed trades carry an unpaid fee. One unpaid trade
+ * turns it off; paying turns it back on. tradeCount is deliberately unaffected,
+ * so a profile never looks artificially thin because of a fee. */
+async function recomputeVerified(sellerId) {
+  const unpaid = await db.collection('requests')
+    .where('sellerId', '==', sellerId)
+    .where('status', '==', 'completed')
+    .where('feePaid', '==', false)
+    .limit(1).get();
+  await db.collection('users').doc(sellerId)
+    .update({ verifiedSeller: unpaid.empty })
+    .catch((e) => console.warn('verified recompute failed', e));
+}
+
+/* ---- Reviews -------------------------------------------------------------
+ * The reviews themselves are a client write: the rules can fully express who
+ * may write one — a participant in a completed trade, once, immutably — so a
+ * callable would add a hop without adding a guarantee.
+ *
+ * The AGGREGATE cannot be, for the same reason as tradeCount. Anyone able to
+ * set their own avgRating would. So it is derived here. */
+exports.onReviewCreate = onDocumentCreated('reviews/{reviewId}', async (event) => {
+  const review = event.data && event.data.data();
+  if (!review || !review.revieweeId) return;
+
+  /* Recomputed from the collection rather than folded into a running average.
+   * A running average drifts on any retry and can't be repaired without the
+   * full set anyway — and the full set is tiny. */
+  const all = await db.collection('reviews')
+    .where('revieweeId', '==', review.revieweeId)
+    .limit(500).get();
+
+  const ratings = all.docs
+    .map((d) => Number(d.data().rating))
+    .filter((n) => Number.isFinite(n) && n >= 1 && n <= 5);
+  if (!ratings.length) return;
+
+  const avg = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+  await db.collection('users').doc(review.revieweeId).update({
+    avgRating: Math.round(avg * 100) / 100,
+    reviewCount: ratings.length
+  });
+});
+
 /* ---- shared -------------------------------------------------------------- */
 
 function requireAuth(req) {

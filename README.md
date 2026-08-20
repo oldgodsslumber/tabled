@@ -4,7 +4,7 @@ A mobile-first web app for buying, selling and trading used board games locally 
 the listing and discovery half of what Facebook Marketplace and Reddit do badly
 for this hobby. Built against `board_game_marketplace_spec.md`.
 
-**This build covers M1–M6**, plus a US-only geo-lock. See
+**This build covers M1–M7**, plus a US-only geo-lock. See
 [Where this build stops](#where-this-build-stops) for exactly what's in and what
 isn't.
 
@@ -458,6 +458,68 @@ no-DST quirk, and a spring-forward boundary.
 
 ---
 
+## Completion & trust (M7)
+
+**A trade completes only when BOTH sides say it did.** That is the whole design.
+The app can never observe money changing hands outside it, but it *can* observe
+two people independently agreeing that it happened — and that agreement is the
+one thing neither side can fake alone.
+
+Which is exactly why completion is a Cloud Function and not a client write. A
+seller able to mark their own trades complete could manufacture a trade history,
+and every trust signal on the profile becomes decorative.
+
+**Completing one trade does a lot at once**, atomically:
+
+| | |
+|---|---|
+| The request | `completed`, `completedAt` stamped |
+| The game entry | `sold`, queue cleared |
+| Everyone else queued | closed with `closedReason: 'itemSold'` |
+| Both users | `tradeCount` +1 — a trade is symmetric, both sides turned up |
+| The listing | archived if every game in it has now sold |
+
+Closing the queue explicitly matters. Anyone still waiting is waiting for
+something that no longer exists, and telling them beats letting them find out
+when their hold silently lapses — so the thread says "this game sold to someone
+else" rather than a bare "expired".
+
+**Archival runs after the transaction, not inside it.** Deciding it needs a read
+of every sibling entry, and a transaction that reads a whole subcollection to
+settle one boolean is a contention magnet on a busy listing. Worst case is a
+listing that stays `active` with everything sold for a moment.
+
+### The fee waiver is decided at completion, not at fee time
+
+`confirmSold` reads `config/global.feeWaiverEndDate` and stamps `feePaid` there
+and then. That is what makes the spec's promise true: a trade completed during
+the waiver stays free **forever**, even after the cutoff passes.
+
+A missing config doc is treated as waived. The fee system doesn't exist yet, and
+defaulting to unpaid would strip the Verified badge off every seller the moment
+M8 ships.
+
+### Reviews
+
+The review itself is a client write — the rules can fully express who may write
+one (a participant in a completed trade, once, immutably), so a callable would
+add a hop without adding a guarantee.
+
+**"Once" is enforced by the document id.** `reviews/{requestId}_{reviewerId}`.
+Rules cannot count documents, but they can deny an *update*, and a second
+attempt at the same id is an update. Without that, one person could review the
+same trade repeatedly and walk an average wherever they liked.
+
+**The average cannot be a client write**, for the same reason as `tradeCount` —
+anyone able to set their own `avgRating` would. `onReviewCreate` recomputes it
+from the whole collection rather than folding into a running average, which
+drifts on any retry and can't be repaired without the full set anyway.
+
+**Reviews are immutable and public.** No edit, no delete. An editable review is
+a review that can be traded away during a dispute.
+
+---
+
 ## Where this build stops
 
 **Working now (M1–M4):**
@@ -480,18 +542,14 @@ no-DST quirk, and a spring-forward boundary.
   promotion on cancel or expiry, 24h hold with a 12h no-show grace
 - Auto-book: one standing weekly availability per seller, 30-minute slots,
   one-tap claiming with deterministic-ID exclusivity, timezone-correct
+- Completion & trust: mutual sold-confirmation, listing archival, trade counts
+  for both sides, immutable one-per-trade reviews with denormalized averages
 - Full demo mode with no Firebase at all — including chat, via a small pub/sub
   that stands in for `onSnapshot`, so the views exercise the same real-time code
   path they'll use against Firestore
 
 **Deliberately not built yet:**
 
-- **M7 — Completion & reviews.** The thread's confirmed-time card says outright
-  that marking a trade complete is a later milestone. `completed` is currently
-  unreachable from the client — the rules only permit the statuses M4 uses, so
-  nothing can slip into a frozen state before mutual confirmation exists.
-  Review rules are written and enforce one-per-trade, participants-only,
-  immutable.
 - **M8 — Stripe fees.** `verifiedSeller` renders as a badge and is already
   unwritable by clients. Nothing charges anything.
 - **M9 — Events.** "In person at an event" is visible but disabled in the create

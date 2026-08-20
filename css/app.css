@@ -883,6 +883,38 @@ select {
 .slot-alt { color: var(--muted); font-size: .78em; }
 .chip.slot.on .slot-alt, .chip.slot:hover .slot-alt { color: inherit; opacity: .8; }
 
+/* ---- Reviews (M7) -------------------------------------------------------- */
+
+.review {
+  padding: .7rem 0;
+  border-top: 1px solid var(--line-soft);
+}
+.review:first-child { border-top: 0; }
+.review-head { display: flex; align-items: center; gap: .6rem; }
+.review-head > div { display: flex; flex-direction: column; min-width: 0; }
+.review-head .fine { margin: 0; }
+.review-body { margin: .5rem 0 0; white-space: pre-wrap; }
+
+.review-prompt { border-color: var(--amber); background: var(--amber-dim); }
+.review-prompt .dash-row { border-top-color: rgba(0,0,0,.08); align-items: center; }
+
+/* Star rating input. Big targets — this is the last thing someone does after a
+ * trade, on a phone, probably standing in a car park. */
+.rate { display: flex; gap: .25rem; justify-content: center; margin-bottom: .25rem; }
+.star {
+  border: 0;
+  background: none;
+  font-size: 2.2rem;
+  line-height: 1;
+  padding: .2rem .3rem;
+  color: var(--muted);
+  cursor: pointer;
+  transition: transform .1s;
+}
+.star.on { color: var(--amber); }
+.star:active { transform: scale(.9); }
+.rate-hint { text-align: center; min-height: 1.2em; margin-top: 0; font-weight: 600; }
+
 /* ---- Overflow menu ------------------------------------------------------- */
 
 .overflow { position: relative; flex: none; }

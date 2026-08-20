@@ -280,8 +280,14 @@ service cloud.firestore {
         // A completed trade is frozen -- trade history and the fee state behind
         // the Verified badge must not be editable after the fact.
         && resource.data.status != 'completed'
-        && !changed(['feePaid', 'buyerId', 'sellerId', 'queuePosition',
-                     'listingId', 'gameEntryId', 'createdAt'])
+        // M7: confirmation and completion state is function-only. A seller able
+        // to write their own completedAt or tradeCount could manufacture a
+        // trade history, and every trust signal on the profile becomes
+        // decorative. bookedSlotId and holdExpiresAt join them for M5/M6.
+        && !changed(['feePaid', 'feeWaived', 'buyerId', 'sellerId', 'queuePosition',
+                     'listingId', 'gameEntryId', 'createdAt',
+                     'buyerConfirmedAt', 'sellerConfirmedAt', 'completedAt',
+                     'closedReason', 'bookedSlotId', 'holdExpiresAt'])
         // Only the current holder may put a time on the table; someone sitting
         // at position 3 can read and chat but cannot jump the queue.
         && (request.resource.data.status != 'proposedTime'
@@ -324,7 +330,14 @@ service cloud.firestore {
       // Written by the counterparty of a completed trade, once. Immutable
       // afterward -- an editable review is a review that can be traded away
       // during a dispute.
-      allow create: if signedIn()
+      //
+      // The document id must be {requestId}_{reviewerId}. That is what enforces
+      // 'once': rules cannot count documents, but a deterministic id turns a
+      // second attempt into an UPDATE, which the last line here denies. Without
+      // it, one person could review the same trade repeatedly and move an
+      // average on their own.
+      allow create: if reviewId == request.resource.data.requestId + '_' + request.auth.uid
+        && signedIn()
         && isUser(request.resource.data.reviewerId)
         && request.resource.data.reviewerId != request.resource.data.revieweeId
         && request.resource.data.rating is number

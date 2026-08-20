@@ -12,6 +12,7 @@
 window.DashboardView = (function () {
 
   var stop = null;
+  var reviewed = null;   /* requestIds I have already reviewed */
 
   function teardown() {
     if (stop) { stop(); stop = null; }
@@ -20,6 +21,13 @@ window.DashboardView = (function () {
   function render(root) {
     teardown();
     root.innerHTML = U.spinner('Loading your requests');
+
+    /* Loaded once per view rather than per row: a completed-trade list is
+     * short, and an existence check per row would be N reads for one boolean. */
+    Store.getMyReviewedRequestIds().then(function (ids) {
+      reviewed = ids;
+      if (document.body.contains(root)) draw(root, Store.myRequests());
+    }).catch(function () { reviewed = []; });
 
     stop = Store.onMyRequests(function (all) {
       /* app.js swaps out #view on navigation; a store subscription outlives
@@ -37,9 +45,35 @@ window.DashboardView = (function () {
     var buying = all.filter(function (r) { return r.buyerId === me && OPEN.indexOf(r.status) !== -1; });
     var closed = all.filter(function (r) { return OPEN.indexOf(r.status) === -1; });
 
+    /* Completed trades still owed a review. Surfaced as its own section because
+     * a review prompt buried in a closed-threads list is a review nobody
+     * writes — and reviews are the entire trust surface. */
+    var toReview = reviewed === null ? [] : all.filter(function (r) {
+      return r.status === 'completed' && reviewed.indexOf(r.id) === -1;
+    });
+
     root.innerHTML =
       '<div class="dash">' +
         '<h1>Requests</h1>' +
+
+        (toReview.length
+          ? '<section class="block review-prompt">' +
+              '<h2>Leave a review</h2>' +
+              '<p class="fine">These trades are done. A review is the only thing that ' +
+                'tells the next person what you found.</p>' +
+              toReview.map(function (r) {
+                var them = r.sellerId === me ? r.buyerName : r.sellerName;
+                return '<div class="dash-row">' +
+                  U.avatar({ displayName: them }, '') +
+                  '<div class="grow">' +
+                    '<strong>' + U.esc(r.gameName || 'Game') + '</strong>' +
+                    '<div class="dash-preview">with ' + U.esc(them || 'them') + '</div>' +
+                  '</div>' +
+                  '<button class="btn small" data-review="' + U.attr(r.id) + '">Review</button>' +
+                '</div>';
+              }).join('') +
+            '</section>'
+          : '') +
 
         section('Selling', selling,
           'Nothing yet. When someone requests one of your games, the conversation lands here.') +
@@ -53,6 +87,11 @@ window.DashboardView = (function () {
             '</section>'
           : '') +
       '</div>';
+
+    U.on(root, '[data-review]', function (e, t) {
+      var r = all.filter(function (x) { return x.id === t.dataset.review; })[0];
+      if (r) ThreadView.reviewDialog(r);
+    });
   }
 
   function section(title, rows, emptyMsg) {
