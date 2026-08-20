@@ -44,6 +44,7 @@ window.CreateView = (function () {
         locationLabel: me.generalArea || '',
         geoPoint: me.geoPoint || null,
         geohash: me.geohash || null,
+        eventId: null, eventName: null, eventStartDate: null, eventEndDate: null,
         entries: [blankEntry()]
       };
       draw(root);
@@ -60,6 +61,10 @@ window.CreateView = (function () {
           locationLabel: l.locationLabel || '',
           geoPoint: l.geoPoint || null,
           geohash: l.geohash || null,
+          eventId: l.eventId || null,
+          eventName: l.eventName || null,
+          eventStartDate: l.eventStartDate || null,
+          eventEndDate: l.eventEndDate || null,
           entries: es.length ? es.map(function (e) { return blankEntry(e); }) : [blankEntry()]
         };
         return Store.getGames(es.map(function (e) { return e.bggId; }).filter(Boolean));
@@ -105,13 +110,11 @@ window.CreateView = (function () {
           '<h2>How can buyers get it?</h2>' +
           '<div class="chip-row">' +
             CFG.FULFILLMENT.map(function (f) {
-              var disabled = f.key === 'inPersonAtEvent';
               return '<button class="chip' + (draft.fulfillment[f.key] ? ' on' : '') +
-                (disabled ? ' disabled' : '') + '" data-ful="' + U.attr(f.key) + '"' +
-                (disabled ? ' disabled title="Events arrive in a later milestone"' : '') + '>' +
-                U.esc(f.label) + '</button>';
+                '" data-ful="' + U.attr(f.key) + '">' + U.esc(f.label) + '</button>';
             }).join('') +
           '</div>' +
+          '<div id="event-picker">' + eventPickerHtml() + '</div>' +
         '</section>' +
 
         '<section class="block">' +
@@ -233,6 +236,158 @@ window.CreateView = (function () {
 
   /* ---- Wiring ------------------------------------------------------------ */
 
+  /* ---- Events (M9) --------------------------------------------------------
+   * Selecting "in person at an event" is a third fulfillment option, not a
+   * location hack. It copies the event's dates onto the listing so hold timing
+   * can react to them without a second lookup. */
+  function eventPickerHtml() {
+    if (!draft.fulfillment.inPersonAtEvent) return '';
+    return '<div class="event-pick">' +
+      (draft.eventId
+        ? '<div class="event-chosen">' +
+            '<div class="grow">' +
+              '<strong>' + U.esc(draft.eventName || 'Event') + '</strong>' +
+              '<span class="fine">' + U.esc(eventDatesLabel(draft)) + '</span>' +
+            '</div>' +
+            '<button class="btn ghost small" data-ev="change">Change</button>' +
+          '</div>' +
+          '<p class="fine">Holds on this listing don\'t start ticking until the event ' +
+            'begins, then compress to ' + CFG.EVENT.holdHours + ' hours so the queue ' +
+            'keeps moving while you\'re there.</p>'
+        : '<button class="btn ghost small" data-ev="pick">Choose an event</button>' +
+          '<p class="fine">Required for in-person selling.</p>') +
+    '</div>';
+  }
+
+  function eventDatesLabel(d) {
+    var a = U.toDate(d.eventStartDate), b = U.toDate(d.eventEndDate);
+    if (!a || !b) return '';
+    var opts = { month: 'short', day: 'numeric' };
+    var same = a.toDateString() === b.toDateString();
+    return same
+      ? a.toLocaleDateString(undefined, opts)
+      : a.toLocaleDateString(undefined, opts) + ' \u2013 ' +
+        b.toLocaleDateString(undefined, Object.assign({ year: 'numeric' }, opts));
+  }
+
+  function refreshEventPicker() {
+    var host = U.$('#event-picker');
+    if (host) host.innerHTML = eventPickerHtml();
+  }
+
+  function openEventPicker() {
+    var m = U.modal('Which event?', U.spinner('Loading events'));
+    Store.listEvents().then(function (events) {
+      m.el.innerHTML =
+        (events.length
+          ? '<div class="event-list">' + events.map(function (e) {
+              return '<button class="event-row" data-pick="' + U.attr(e.id) + '">' +
+                '<div class="grow">' +
+                  '<strong>' + U.esc(e.name) + '</strong>' +
+                  '<span class="fine">' + U.esc(e.venue || '') +
+                    (e.venue ? ' \u00b7 ' : '') +
+                    U.esc(eventDatesLabel({ eventStartDate: e.startDate, eventEndDate: e.endDate })) +
+                  '</span>' +
+                '</div>' +
+              '</button>';
+            }).join('') + '</div>'
+          : '<p class="fine">No upcoming events yet. Create the one you\'re going to.</p>') +
+        '<div class="modal-actions">' +
+          '<button class="btn ghost" data-act="new">Create an event</button>' +
+        '</div>' +
+        '<p class="fine">Anyone can add an event \u2014 there\'s no approval queue. ' +
+          'Duplicates and spam get reported the same way listings do.</p>';
+
+      U.on(m.el, '[data-pick]', function (e, t) {
+        var ev = events.filter(function (x) { return x.id === t.dataset.pick; })[0];
+        if (!ev) return;
+        chooseEvent(ev);
+        m.close();
+      });
+      U.on(m.el, '[data-act="new"]', function () { m.close(); openEventCreate(); });
+    });
+  }
+
+  function chooseEvent(ev) {
+    draft.eventId = ev.id;
+    draft.eventName = ev.name;
+    draft.eventStartDate = ev.startDate;
+    draft.eventEndDate = ev.endDate;
+    refreshEventPicker();
+  }
+
+  function openEventCreate() {
+    var today = new Date();
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    var iso = function (d) {
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    };
+    var m = U.modal('New event',
+      '<label class="field"><span>Name</span>' +
+        '<input id="ev-name" type="text" maxlength="80" placeholder="PAX Unplugged 2026"></label>' +
+      '<label class="field"><span>Venue <em>optional</em></span>' +
+        '<input id="ev-venue" type="text" maxlength="120" placeholder="Pennsylvania Convention Center"></label>' +
+      '<div class="row2">' +
+        '<label class="field"><span>First day</span>' +
+          '<input id="ev-start" type="date" value="' + U.attr(iso(today)) + '"></label>' +
+        '<label class="field"><span>Last day</span>' +
+          '<input id="ev-end" type="date" value="' + U.attr(iso(today)) + '"></label>' +
+      '</div>' +
+      '<p class="fine">Dates are read in your own timezone. For a multi-day con that ' +
+        'is close enough \u2014 they decide when holds start and stop ticking, not when ' +
+        'anyone has to be somewhere.</p>' +
+      '<div class="modal-actions">' +
+        '<button class="btn ghost" data-act="cancel">Cancel</button>' +
+        '<button class="btn" data-act="create">Create</button>' +
+      '</div>');
+
+    U.on(m.el, '[data-act]', function (e, t) {
+      if (t.dataset.act === 'cancel') { m.close(); return; }
+      var name = U.$('#ev-name', m.el).value.trim();
+      var startStr = U.$('#ev-start', m.el).value;
+      var endStr = U.$('#ev-end', m.el).value;
+      if (!name) { U.toast('The event needs a name', 'warn'); return; }
+      if (!startStr || !endStr) { U.toast('Both dates are required', 'warn'); return; }
+
+      /* Local midnight to local end-of-day, so a whole final day counts as
+       * "during the event" rather than ending at 00:00 on it. */
+      var start = new Date(startStr + 'T00:00:00');
+      var end = new Date(endStr + 'T23:59:59');
+      if (end < start) { U.toast('The last day is before the first', 'warn'); return; }
+
+      var days = (end - start) / 86400000;
+      if (days > CFG.EVENT.maxDays) {
+        U.toast('That is longer than ' + CFG.EVENT.maxDays + ' days \u2014 is it really one event?', 'warn');
+        return;
+      }
+      var monthsAhead = (start - Date.now()) / (30.44 * 86400000);
+      if (monthsAhead > CFG.EVENT.maxMonthsAhead) {
+        U.toast('That is more than ' + CFG.EVENT.maxMonthsAhead + ' months away \u2014 check the year', 'warn');
+        return;
+      }
+      if (end < new Date()) { U.toast('That event has already finished', 'warn'); return; }
+
+      t.disabled = true;
+      t.textContent = 'Creating\u2026';
+      Store.createEvent({
+        name: name,
+        venue: U.$('#ev-venue', m.el).value.trim(),
+        startDate: start,
+        endDate: end,
+        timeZone: TimeSlots.currentZone()
+      }).then(function (id) {
+        m.close();
+        chooseEvent({ id: id, name: name, startDate: start, endDate: end });
+        U.toast('Event created');
+      }).catch(function (err) {
+        console.error('[tabled] event create failed', err);
+        U.toast('Could not create that event', 'bad');
+        t.disabled = false;
+        t.textContent = 'Create';
+      });
+    });
+  }
+
   function wire(root) {
     U.$('#f-title', root).addEventListener('input', function () { draft.title = this.value; });
 
@@ -253,6 +408,19 @@ window.CreateView = (function () {
       var k = t.dataset.ful;
       draft.fulfillment[k] = !draft.fulfillment[k];
       t.classList.toggle('on', draft.fulfillment[k]);
+      if (k === 'inPersonAtEvent') {
+        /* Turning it off clears the event rather than leaving a stale one
+         * attached to a listing that no longer claims to be at a con. */
+        if (!draft.fulfillment[k]) {
+          draft.eventId = draft.eventName = null;
+          draft.eventStartDate = draft.eventEndDate = null;
+        }
+        refreshEventPicker();
+      }
+    });
+
+    U.on(root, '[data-ev]', function (e, t) {
+      if (t.dataset.ev === 'pick' || t.dataset.ev === 'change') openEventPicker();
     });
 
     /* ---- Entry fields (delegated; no re-render on typing) ---- */
@@ -420,6 +588,9 @@ window.CreateView = (function () {
     if (draft.fulfillment.pickup && !draft.locationLabel.trim()) {
       return 'Local pickup needs a general area.';
     }
+    if (draft.fulfillment.inPersonAtEvent && !draft.eventId) {
+      return 'Pick an event, or create one, for in-person selling.';
+    }
     var bad = real.filter(function (e) {
       return e.askingPrice !== null && (isNaN(e.askingPrice) || e.askingPrice < 0);
     });
@@ -451,6 +622,10 @@ window.CreateView = (function () {
           locationLabel: draft.locationLabel.trim(),
           geoPoint: draft.geoPoint,
           geohash: draft.geohash,
+          eventId: draft.eventId,
+          eventName: draft.eventName,
+          eventStartDate: draft.eventStartDate,
+          eventEndDate: draft.eventEndDate,
           countryCode: draft.countryCode || null,
           state: draft.state || null,
           status: 'active'

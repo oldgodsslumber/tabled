@@ -4,7 +4,7 @@ A mobile-first web app for buying, selling and trading used board games locally 
 the listing and discovery half of what Facebook Marketplace and Reddit do badly
 for this hobby. Built against `board_game_marketplace_spec.md`.
 
-**This build covers M1–M8**, plus a US-only geo-lock. See
+**This build covers M1–M9**, plus a US-only geo-lock. See
 [Where this build stops](#where-this-build-stops) for exactly what's in and what
 isn't.
 
@@ -602,6 +602,50 @@ designed. The UI bug is fixed; the guard stays.
 
 ---
 
+## Events & convention selling (M9)
+
+The direct replacement for hunting through a BGG forum thread the week before a
+con: a real, searchable, filterable, photo-backed listing scoped to one event.
+
+**Open creation.** Any signed-in user can add an event — no allowlist, no
+approval step. Same trust model as listings, backed by reporting rather than
+gatekeeping, and it means nobody has to hand-seed every convention someone wants
+to sell at. A duplicate or spam event gets reported like a duplicate listing.
+
+**A third fulfillment option, not a location hack.** Selecting it requires
+picking or creating an event, and copies that event's dates onto the listing —
+copied rather than referenced, so hold timing never needs a second read, and so
+editing an event later can't retroactively move every listing's clock.
+
+### Three-phase hold timing
+
+A flat 24h window is wrong in **both** directions for a convention:
+
+| Phase | Hold behaviour | Why |
+|---|---|---|
+| Before it starts | **No expiry at all** | A listing made in October for a November con shouldn't expire its holder for not proposing a time at an event that doesn't exist yet |
+| While it's running | **3 hours**, never past the event's end | A con lasts three days; a 24h hold takes the item off the market for a third of it |
+| After it ends | **Force-expired** | The in-person opportunity is gone. The listing itself is untouched — a seller can switch it to shipping-only for whoever missed them |
+
+The no-show grace shortens to **1 hour** for event listings too, for the same
+reason: the next person in line needs their turn while the con is still on.
+
+Implementation notes worth keeping:
+
+- **"Paused" is `null`, not a far-future date.** `holdDeadlineFor()` returns
+  null before the event starts, and the sweep skips null deadlines — so the
+  pause needs no special case anywhere else.
+- **Requests carry a denormalized `eventEndDate`.** Firestore cannot join, and a
+  sweep that read the parent listing for every open request would be one extra
+  read per request per run.
+- **`resyncQueue` reads the listing** so a *promoted* holder gets the right kind
+  of window — compressed at a live con, none at all before it starts.
+
+Auto-book already constrains slots to the event window; `bookSlot` has rejected
+out-of-window times since M6.
+
+---
+
 ## Where this build stops
 
 **Working now (M1–M4):**
@@ -629,14 +673,14 @@ designed. The UI bug is fixed; the guard stays.
 - Verification fees: Stripe Checkout for the $0.25 per-trade fee, signed
   webhook, the Verified badge it gates, and the launch waiver that makes it
   moot until the cutoff
+- Events: open creation, "in person at an event" as a third fulfillment
+  option, event-scoped feed, and three-phase hold timing around the con
 - Full demo mode with no Firebase at all — including chat, via a small pub/sub
   that stands in for `onSnapshot`, so the views exercise the same real-time code
   path they'll use against Firestore
 
 **Deliberately not built yet:**
 
-- **M9 — Events.** "In person at an event" is visible but disabled in the create
-  form. `events` rules and the event-scoped index exist.
 
 The `feeWaiverEndDate` in `config/global` is not created by any code — add it by
 hand in the console when you get to M8.

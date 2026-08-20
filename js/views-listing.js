@@ -80,6 +80,14 @@ window.ListingView = (function () {
           return '<span class="badge">' + U.esc(f) + '</span>';
         }).join('') + '</div>' : '') +
 
+        (l.eventId
+          ? '<a class="event-link" href="#/feed?eventId=' + U.attr(l.eventId) + '">' +
+              '<span class="grow">Selling at <strong>' +
+                U.esc(l.eventName || 'an event') + '</strong></span>' +
+              '<span class="chev">\u203a</span>' +
+            '</a>'
+          : '') +
+
         '<div class="entries">' +
           entries.map(function (e) {
             return entryHtml(e, games[String(e.bggId)], mine);

@@ -59,6 +59,37 @@ window.Feed = (function () {
     '</a>';
   }
 
+  /* Browse events. Deliberately a sheet rather than a route: it's a jump-off
+   * point, not somewhere anyone wants to land via Back. */
+  function openEvents() {
+    var m = U.modal('Events', U.spinner('Loading events'));
+    Store.listEvents().then(function (events) {
+      if (!events.length) {
+        m.el.innerHTML = U.empty('No events yet',
+          'Events appear here once someone lists a game to sell at one.');
+        return;
+      }
+      var now = Date.now();
+      m.el.innerHTML = '<div class="event-list">' + events.map(function (e) {
+        var start = U.toDate(e.startDate), end = U.toDate(e.endDate);
+        var live = start && end && now >= start.getTime() && now <= end.getTime();
+        return '<button class="event-row" data-open="' + U.attr(e.id) + '">' +
+          '<div class="grow">' +
+            '<strong>' + U.esc(e.name) + '</strong>' +
+            '<span class="fine">' + (e.venue ? U.esc(e.venue) + ' \u00b7 ' : '') +
+              U.esc(rangeLabel(start, end)) + '</span>' +
+          '</div>' +
+          (live ? '<span class="badge deal">On now</span>' : '') +
+        '</button>';
+      }).join('') + '</div>';
+
+      U.on(m.el, '[data-open]', function (e, t) {
+        m.close();
+        App.go('feed', { eventId: t.dataset.open, sort: 'new' });
+      });
+    });
+  }
+
   function priceLabel(l) {
     if (typeof l.minPrice !== 'number') return '<span class="ask">Ask</span>';
     if (typeof l.maxPrice === 'number' && l.maxPrice !== l.minPrice) {
@@ -109,6 +140,7 @@ window.Feed = (function () {
 
     var n = activeCount(state);
     root.innerHTML =
+      '<div id="event-header"></div>' +
       '<div class="feed-head">' +
         '<form class="searchbar" role="search">' +
           '<input type="search" name="q" placeholder="Search games — try &quot;wingspan&quot;" ' +
@@ -123,6 +155,7 @@ window.Feed = (function () {
                 U.esc(s.label) + '</button>';
             }).join('') +
           '</div>' +
+          '<button class="pill" data-events>Events</button>' +
           '<button class="pill filter-btn' + (n ? ' on' : '') + '" data-open-filters>' +
             'Filters' + (n ? ' <span class="count">' + n + '</span>' : '') +
           '</button>' +
@@ -133,7 +166,56 @@ window.Feed = (function () {
       '<div class="feed-foot" id="feed-foot"></div>';
 
     wire(root);
+    if (state.eventId) drawEventHeader(root, state.eventId);
     load(true);
+  }
+
+  /* An event feed gets its venue and dates up top — this is the direct
+   * replacement for a BGG forum thread, and the first thing anyone wants to
+   * confirm is that they're looking at the right con. */
+  function drawEventHeader(root, eventId) {
+    var host = U.$('#event-header', root);
+    if (!host) return;
+    host.innerHTML = U.spinner('');
+
+    Store.getEvent(eventId).then(function (ev) {
+      if (!ev) { host.innerHTML = ''; return; }
+      var start = U.toDate(ev.startDate), end = U.toDate(ev.endDate);
+      var now = Date.now();
+      var phase = !start || !end ? ''
+        : (now < start.getTime() ? 'upcoming'
+          : (now > end.getTime() ? 'over' : 'live'));
+
+      host.innerHTML =
+        '<div class="event-banner ' + U.attr(phase) + '">' +
+          '<div class="grow">' +
+            '<h1>' + U.esc(ev.name) + '</h1>' +
+            '<p class="fine">' +
+              (ev.venue ? U.esc(ev.venue) + ' \u00b7 ' : '') +
+              U.esc(rangeLabel(start, end)) +
+            '</p>' +
+          '</div>' +
+          (phase === 'live' ? '<span class="badge deal">On now</span>' : '') +
+          (phase === 'over' ? '<span class="badge sold">Finished</span>' : '') +
+          Safety.menuHtml('event', ev.id, ev.name, null) +
+        '</div>' +
+        (phase === 'over'
+          ? '<div class="banner warn">This event has finished. In-person holds on ' +
+            'these listings were released \u2014 sellers may still ship.</div>'
+          : '');
+
+      Safety.wireMenu(host, { sellerId: ev.id, sellerName: ev.name });
+    }).catch(function () { host.innerHTML = ''; });
+  }
+
+  function rangeLabel(a, b) {
+    if (!a || !b) return '';
+    var o = { month: 'short', day: 'numeric' };
+    if (a.toDateString() === b.toDateString()) {
+      return a.toLocaleDateString(undefined, Object.assign({ year: 'numeric' }, o));
+    }
+    return a.toLocaleDateString(undefined, o) + ' \u2013 ' +
+      b.toLocaleDateString(undefined, Object.assign({ year: 'numeric' }, o));
   }
 
   /* A row of removable chips for whatever is currently narrowing the feed. Cheap
@@ -141,6 +223,7 @@ window.Feed = (function () {
    * filter is set two screens away in a sheet. */
   function activeChips(p) {
     var chips = [];
+    if (p.eventId) chips.push({ k: 'eventId', t: 'At this event' });
     if (p.radius) chips.push({ k: 'radius', t: 'Within ' + p.radius + ' mi' });
     if (p.category) chips.push({ k: 'category', t: p.category });
     if (p.condition) chips.push({ k: 'condition', t: CFG.condition(p.condition).label });
@@ -177,12 +260,14 @@ window.Feed = (function () {
     });
 
     U.on(root, '[data-open-filters]', function () { openFilters(); });
+    U.on(root, '[data-events]', function () { openEvents(); });
 
     U.on(root, '[data-drop]', function (e, t) {
       var k = t.dataset.drop;
       var next = Object.assign({}, state);
       if (k === '*') {
-        ['radius', 'category', 'condition', 'fulfillment', 'tags'].forEach(function (f) { delete next[f]; });
+        ['radius', 'category', 'condition', 'fulfillment', 'tags', 'eventId']
+          .forEach(function (f) { delete next[f]; });
       } else if (k.indexOf('tag:') === 0) {
         var drop = k.slice(4);
         var left = String(next.tags || '').split(',').filter(function (x) { return x && x !== drop; });

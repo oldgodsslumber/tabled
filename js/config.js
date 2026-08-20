@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260820d';
+  var BUILD = '20260820e';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -216,6 +216,27 @@ window.CFG = (function () {
     waiverEndsLabel: 'December 31, 2026'
   };
 
+  /* ---- Events (M9) -------------------------------------------------------
+   * Convention selling. The direct replacement for hunting through a BGG forum
+   * thread the week before a con.
+   *
+   * Hold timing compresses hard once an event is live: a flat 24h window is
+   * wrong in both directions for a convention. Too short before it starts (a
+   * listing made in October for a November con would expire its holder for not
+   * proposing a time at an event that doesn't exist yet); far too long once it
+   * is running (a con lasts three days, so a 24h hold takes the item off the
+   * market for a third of it).
+   *
+   * Display copies. functions/index.js holds the values that actually decide. */
+  var EVENT = {
+    holdHours: 3,
+    graceHours: 1,
+    /* How far ahead an event may be created. Long enough for next year's con,
+     * short enough that a typo of 2262 is caught. */
+    maxMonthsAhead: 24,
+    maxDays: 14
+  };
+
   /* ---- Distance ----------------------------------------------------------
    * Radius options for the "near me" filter, in miles. */
   var RADII = [5, 10, 25, 50, 100];
@@ -265,6 +286,7 @@ window.CFG = (function () {
     inUsBox: inUsBox,
     QUEUE: QUEUE,
     FEE: FEE,
+    EVENT: EVENT,
     isOpenRequest: isOpenRequest,
     REPORT_REASONS: REPORT_REASONS,
     SAFETY: SAFETY,

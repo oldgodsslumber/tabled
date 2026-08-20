@@ -419,6 +419,44 @@ exports.onReportCreate = onDocumentCreated('reports/{reportId}', async (event) =
 const HOLD_HOURS = 24;    /* holder's window to land on a time */
 const GRACE_HOURS = 12;   /* after a scheduled time passes with no completion */
 
+/* ---- Event-aware hold timing (M9) ---------------------------------------
+ * A flat 24h window is wrong in BOTH directions for a convention.
+ *
+ * Too short before it starts: a listing made in October for a late-November
+ * con would expire its holder for not proposing a pickup time at an event that
+ * does not exist yet.
+ *
+ * Too long once it is running: a con lasts three days. Somebody sitting on a
+ * 24-hour hold has effectively taken the item off the market for a third of
+ * the event.
+ *
+ * So event listings get three phases: no expiry before, compressed during,
+ * force-expired after. */
+const EVENT_HOLD_HOURS = 3;
+const EVENT_GRACE_HOURS = 1;
+
+function toMs(ts) {
+  return ts && typeof ts.toMillis === 'function' ? ts.toMillis() : null;
+}
+
+/* The hold deadline for a request, given the listing it is against.
+ *
+ * Returns null for "does not expire yet" — a pre-event hold. The sweep skips
+ * null deadlines entirely, which is what implements "paused before the event"
+ * without a special case anywhere else. */
+function holdDeadlineFor(listing, nowMs) {
+  const startMs = toMs(listing && listing.eventStartDate);
+  const endMs = toMs(listing && listing.eventEndDate);
+
+  if (!startMs || !endMs) return holdDeadline(nowMs);          /* ordinary listing */
+  if (nowMs < startMs) return null;                            /* con hasn't started */
+  if (nowMs > endMs) return admin.firestore.Timestamp.fromMillis(nowMs);  /* over */
+
+  /* Live: compressed, but never past the end of the event itself. */
+  const compressed = nowMs + EVENT_HOLD_HOURS * 3600000;
+  return admin.firestore.Timestamp.fromMillis(Math.min(compressed, endMs));
+}
+
 /* The statuses that occupy a place in the queue. Anything else (completed,
  * cancelled, expired) has left it. */
 const OPEN_STATUSES = ['queued', 'onHold', 'proposedTime', 'scheduled'];
@@ -438,8 +476,13 @@ function holdDeadline(fromMs) {
  * Must be called inside a transaction that has already read what it needs.
  */
 async function resyncQueue(tx, listingId, gameEntryId, nowMs) {
-  const entryRef = db.collection('listings').doc(listingId)
-    .collection('gameEntries').doc(gameEntryId);
+  const listingRef = db.collection('listings').doc(listingId);
+  const entryRef = listingRef.collection('gameEntries').doc(gameEntryId);
+
+  /* Read the listing so a promoted holder gets the right KIND of window — a
+   * compressed one at a live con, none at all before it starts. */
+  const listingSnap = await tx.get(listingRef);
+  const listing = listingSnap.exists ? listingSnap.data() : {};
 
   const openSnap = await tx.get(
     db.collection('requests')
@@ -480,7 +523,7 @@ async function resyncQueue(tx, listingId, gameEntryId, nowMs) {
       /* Promoted to holder: a fresh full window, not the remainder of
        * someone else's. They've only just been told it's their turn. */
       patch.status = 'onHold';
-      patch.holdExpiresAt = holdDeadline(nowMs);
+      patch.holdExpiresAt = holdDeadlineFor(listing, nowMs);
       patch.promotedAt = admin.firestore.Timestamp.fromMillis(nowMs);
     }
     if (Object.keys(patch).length) {
@@ -494,7 +537,7 @@ async function resyncQueue(tx, listingId, gameEntryId, nowMs) {
     tx.update(entryRef, {
       status: 'onHold',
       currentHoldRequestId: holder.id,
-      holdExpiresAt: holder.data().holdExpiresAt || holdDeadline(nowMs),
+      holdExpiresAt: holder.data().holdExpiresAt || holdDeadlineFor(listing, nowMs),
       queueCount: open.length
     });
   } else {
@@ -589,9 +632,16 @@ exports.createRequest = onCall(async (req) => {
 
       status: position === 0 ? 'onHold' : 'queued',
       queuePosition: position,
-      /* Only the holder is on the clock. Everyone else is waiting on them. */
-      holdExpiresAt: position === 0 ? holdDeadline(nowMs) : null,
+      /* Only the holder is on the clock. Everyone else is waiting on them.
+       * For an event listing this may legitimately be null — a hold placed
+       * before the con starts does not tick. */
+      holdExpiresAt: position === 0 ? holdDeadlineFor(listing, nowMs) : null,
       promotedAt: position === 0 ? admin.firestore.Timestamp.fromMillis(nowMs) : null,
+      /* Denormalized so the expiry sweep can find requests whose event has
+       * ended. Firestore cannot join, and a sweep that had to read the parent
+       * listing for every open request would be one read per request per run. */
+      eventId: listing.eventId || null,
+      eventEndDate: listing.eventEndDate || null,
 
       proposedTime: null,
       proposedBy: null,
@@ -611,7 +661,7 @@ exports.createRequest = onCall(async (req) => {
     tx.update(entryRef, {
       status: 'onHold',
       currentHoldRequestId: position === 0 ? newRef.id : (entry.currentHoldRequestId || newRef.id),
-      holdExpiresAt: position === 0 ? holdDeadline(nowMs) : (entry.holdExpiresAt || null),
+      holdExpiresAt: position === 0 ? holdDeadlineFor(listing, nowMs) : (entry.holdExpiresAt || null),
       queueCount: position + 1
     });
 
@@ -708,19 +758,52 @@ exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
     reverted++;
   }
 
-  /* 3. No-shows: a scheduled time plus the grace cushion, with no completion. */
-  const graceCutoff = admin.firestore.Timestamp.fromMillis(nowMs - GRACE_HOURS * 3600000);
-  const missed = await db.collection('requests')
-    .where('status', '==', 'scheduled')
-    .where('scheduledTime', '<=', graceCutoff)
+  /* 3. Event listings whose convention has ended. The in-person opportunity is
+   * gone, so an open hold or proposal on one is holding an item hostage to a
+   * meeting that can no longer happen. The listing itself is untouched — a
+   * seller can still switch it to shipping-only for whoever missed them. */
+  const endedEvents = await db.collection('requests')
+    .where('status', 'in', OPEN_STATUSES)
+    .where('eventEndDate', '<=', now)
     .limit(300).get();
 
-  for (const doc of missed.docs) {
+  let eventClosed = 0;
+  for (const doc of endedEvents.docs) {
     await doc.ref.update({
       status: 'expired',
+      closedReason: 'eventEnded',
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
     remember(doc.data());
+    eventClosed++;
+  }
+
+  /* 4. No-shows: a scheduled time plus the grace cushion, with no completion.
+   * Event listings use a much shorter cushion — an hour, not twelve — because
+   * a con is only a few days long and the next person in line needs their
+   * turn while the event is still running. */
+  const graceCutoff = admin.firestore.Timestamp.fromMillis(nowMs - GRACE_HOURS * 3600000);
+  const eventGraceCutoff = admin.firestore.Timestamp.fromMillis(nowMs - EVENT_GRACE_HOURS * 3600000);
+  const missed = await db.collection('requests')
+    .where('status', '==', 'scheduled')
+    .where('scheduledTime', '<=', eventGraceCutoff)
+    .limit(300).get();
+
+  for (const doc of missed.docs) {
+    const d = doc.data();
+    /* An event request that is inside the shorter cushion is not a no-show
+     * yet. The broad query above uses the generous cutoff, so this filters
+     * back down for the ones that need it. */
+    const scheduledMs = toMs(d.scheduledTime);
+    const cushion = d.eventEndDate ? EVENT_GRACE_HOURS : GRACE_HOURS;
+    if (scheduledMs && scheduledMs + cushion * 3600000 > nowMs) continue;
+
+    await doc.ref.update({
+      status: 'expired',
+      closedReason: 'noShow',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    remember(d);
     noShows++;
   }
 
@@ -735,7 +818,8 @@ exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
   }
 
   console.log(`advanceExpiredHolds: ${expired} holds expired, ${reverted} proposals ` +
-    `reverted, ${noShows} no-shows, ${touched.size} entries resynced`);
+    `reverted, ${eventClosed} ended-event closures, ${noShows} no-shows, ` +
+    `${touched.size} entries resynced`);
 });
 
 /* =========================================================================

@@ -343,6 +343,10 @@ window.Store = (function () {
           countryCode: listing.countryCode || null,
           state: listing.state || null,
           eventId: listing.eventId || null,
+          eventName: listing.eventName || null,
+          /* Copied from the event at listing time rather than referenced, so
+           * the hold-timing logic never needs a second read — and so editing
+           * an event later cannot retroactively move every listing's clock. */
           eventStartDate: listing.eventStartDate || null,
           eventEndDate: listing.eventEndDate || null,
           status: listing.status || 'active',
@@ -773,6 +777,47 @@ window.Store = (function () {
            * returns to localhost rather than production. */
           returnUrl: location.origin
         });
+      },
+
+      /* ---- Events (M9) ----
+       * Open creation, same trust model as listings: no curated allowlist and
+       * no approval step, backed by the existing report mechanism. Otherwise
+       * every convention anyone wants to sell at has to be seeded by hand. */
+      createEvent: function (event) {
+        var ref = fb.doc(col('events'));
+        return fb.setDoc(ref, {
+          name: event.name,
+          venue: event.venue || '',
+          startDate: event.startDate,
+          endDate: event.endDate,
+          timeZone: event.timeZone || null,
+          createdBy: myUid,
+          createdAt: fb.serverTimestamp()
+        }).then(function () { return ref.id; });
+      },
+
+      getEvent: function (id) {
+        return fb.getDoc(docRef('events', id)).then(snapData);
+      },
+
+      /* Upcoming and currently-running events. An event that ended yesterday is
+       * not a thing anyone wants to list against, so the cutoff is endDate
+       * rather than startDate. */
+      listEvents: function () {
+        return fb.getDocs(fb.query(col('events'),
+          fb.where('endDate', '>=', new Date()),
+          fb.orderBy('endDate', 'asc'),
+          fb.limit(50)
+        )).then(function (qs) {
+          var out = [];
+          qs.forEach(function (s) { out.push(snapData(s)); });
+          return out.sort(function (a, b) {
+            return (U.toDate(a.startDate) || 0) - (U.toDate(b.startDate) || 0);
+          });
+        }).catch(function (err) {
+          console.warn('[tabled] events read failed', err);
+          return [];
+        });
       }
     };
   }
@@ -800,6 +845,7 @@ window.Store = (function () {
           parsed.messages = parsed.messages || {};
           parsed.slots = parsed.slots || {};
           parsed.reviews = parsed.reviews || {};
+          parsed.events = parsed.events || {};
           return parsed;
         }
       } catch (e) { /* fall through to seed */ }
@@ -897,7 +943,7 @@ window.Store = (function () {
 
       return {
         users: users, games: games, listings: listings, entries: entries,
-        blocked: {}, reports: {}, requests: [], messages: {}, slots: {}, reviews: {}
+        blocked: {}, reports: {}, requests: [], messages: {}, slots: {}, reviews: {}, events: {}
       };
     }
 
@@ -984,7 +1030,8 @@ window.Store = (function () {
         };
         ['sellerId', 'sellerName', 'sellerPhoto', 'title', 'fulfillment',
           'locationLabel', 'geoPoint', 'geohash', 'countryCode', 'state',
-          'eventId', 'status'].forEach(function (k) {
+          'eventId', 'eventName', 'eventStartDate', 'eventEndDate',
+          'status'].forEach(function (k) {
           if (listing[k] !== undefined) l[k] = listing[k];
         });
         l.status = l.status || 'active';
@@ -1451,6 +1498,26 @@ window.Store = (function () {
           .map(function (r) { return r.requestId; }));
       },
 
+      createEvent: function (event) {
+        db.events = db.events || {};
+        var id = U.uid('ev_');
+        db.events[id] = Object.assign({ id: id, createdBy: myUid, createdAt: Date.now() }, event);
+        save();
+        return Promise.resolve(id);
+      },
+      getEvent: function (id) {
+        return Promise.resolve(clone((db.events || {})[id]) || null);
+      },
+      listEvents: function () {
+        var now = Date.now();
+        return Promise.resolve(Object.keys(db.events || {})
+          .map(function (k) { return clone(db.events[k]); })
+          .filter(function (e) { return (U.toDate(e.endDate) || 0) >= now; })
+          .sort(function (a, b) {
+            return (U.toDate(a.startDate) || 0) - (U.toDate(b.startDate) || 0);
+          }));
+      },
+
       /* Demo mode has no Stripe. Settling directly is honest here precisely
        * because it is obviously fake — there is no card, no session, and the
        * banner says so. It exercises the badge recompute, which is the part
@@ -1641,6 +1708,11 @@ window.Store = (function () {
     /* ---- completion & reviews (M7) ---- */
     confirmSold: function (requestId) { return backend.confirmSold(requestId); },
     startFeeCheckout: function (requestId) { return backend.startFeeCheckout(requestId); },
+
+    /* ---- events (M9) ---- */
+    createEvent: function (e) { return backend.createEvent(e); },
+    getEvent: function (id) { return backend.getEvent(id); },
+    listEvents: function () { return backend.listEvents(); },
 
     /* Completed trades of mine, as SELLER, that still owe a fee. The buyer
      * never owes anything, so this is deliberately one-sided. */
