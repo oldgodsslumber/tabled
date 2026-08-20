@@ -4,7 +4,7 @@ A mobile-first web app for buying, selling and trading used board games locally 
 the listing and discovery half of what Facebook Marketplace and Reddit do badly
 for this hobby. Built against `board_game_marketplace_spec.md`.
 
-**This build covers M1–M5**, plus a US-only geo-lock. See
+**This build covers M1–M6**, plus a US-only geo-lock. See
 [Where this build stops](#where-this-build-stops) for exactly what's in and what
 isn't.
 
@@ -410,6 +410,54 @@ type groups* — a mix produces silently wrong sweep results rather than an erro
 
 ---
 
+## Auto-book (M6)
+
+**One standing weekly availability per seller**, not per listing. A seller's
+free Saturday is a fact about the seller; duplicating it per listing means it's
+wrong on most of them within a month.
+
+**Exclusivity is the document ID.** `bookedSlots/{sellerId}_{date}_{startTime}`
+plus `.create()`, which fails if the document exists. No transaction, no
+locking — the uniqueness of a primary key *is* the lock. Keyed on the seller
+rather than the listing, so the same person can't be booked twice at once from
+two different listings. There's a test for exactly that case.
+
+That ID is **construct-only, never parsed**. Firebase UIDs are alphanumeric so
+the underscore separator is unambiguous in production, but that's a property of
+the UID format, not a guarantee of this string — the demo backend's `demo_theo`
+already breaks it. Every caller has `date` and `startTime` as fields already.
+
+**Booking produces `proposedTime`, never `scheduled`.** Auto-book and chat
+negotiation are two ways of *arriving* at a proposal; what happens after is
+identical, and the seller still gets the final Confirm/Decline.
+
+**Slot release is a trigger, not a call site.** A slot has to be freed on
+decline, cancel, expiry and completion. One trigger handles all of them, however
+the request got there — and it *has* to be server-side anyway, because the rules
+deny every client write to `bookedSlots`.
+
+### Timezones, and why this file is more than arithmetic
+
+"Saturday 10:00" is a wall-clock time, not an instant. It means 10:00 where the
+**seller** is, because that's who has to be somewhere. But a 50-mile radius
+crosses US zone lines in several places and shipping listings are nationwide, so
+the buyer may be elsewhere — and this is a scheduling tool, where being an hour
+off is the one failure that actually wastes someone's afternoon.
+
+So the seller's IANA zone is stored alongside their windows, windows are
+interpreted in it, and everything becomes a real instant before it's stored or
+compared. Buyers see slots in **their own** local time, with the seller's clock
+in brackets when the zones differ.
+
+`zonedToUtc()` does this without a date library via the Intl offset trick, in
+two passes — the offset depends on the instant you're trying to find, and a
+single pass lands an hour out on DST boundaries. Note that JS `Date` parsing is
+no help here: `new Date('2026-08-22 10:00')` uses the *runtime's* zone, which is
+exactly the wrong one. Verified against EST/EDT, cross-zone offsets, Arizona's
+no-DST quirk, and a spring-forward boundary.
+
+---
+
 ## Where this build stops
 
 **Working now (M1–M4):**
@@ -430,13 +478,14 @@ type groups* — a mix produces silently wrong sweep results rather than an erro
   dashboard split by role, unread badge, cancel/decline
 - Hold & queue: server-assigned positions, "you're #3 in line", automatic
   promotion on cancel or expiry, 24h hold with a 12h no-show grace
+- Auto-book: one standing weekly availability per seller, 30-minute slots,
+  one-tap claiming with deterministic-ID exclusivity, timezone-correct
 - Full demo mode with no Firebase at all — including chat, via a small pub/sub
   that stands in for `onSnapshot`, so the views exercise the same real-time code
   path they'll use against Firestore
 
 **Deliberately not built yet:**
 
-- **M6 — Auto-book.** `bookedSlots` is ruled (client writes denied) but unused.
 - **M7 — Completion & reviews.** The thread's confirmed-time card says outright
   that marking a trade complete is a later milestone. `completed` is currently
   unreachable from the client — the rules only permit the statuses M4 uses, so

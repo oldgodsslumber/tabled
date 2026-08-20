@@ -731,6 +731,178 @@ exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
     `reverted, ${noShows} no-shows, ${touched.size} entries resynced`);
 });
 
+/* =========================================================================
+ * M6 — Preset availability & auto-book
+ *
+ * A seller sets one standing weekly availability that applies across all their
+ * listings. It's sliced into 30-minute increments, and whoever currently holds
+ * a game entry can claim one in a single tap.
+ *
+ * Exclusivity comes from the deterministic document ID
+ * ({sellerId}_{date}_{startTime}) plus `.create()`, which fails if the document
+ * already exists. No transaction, no locking — the uniqueness of a primary key
+ * IS the lock. Keyed on the seller rather than the listing, so the same person
+ * can't be booked twice at once across two different listings.
+ *
+ * The callable re-derives the instant from (date, startTime, seller's zone)
+ * rather than trusting the client's arithmetic, and re-checks the slot against
+ * the seller's stored windows. A client that computes a slot outside the
+ * seller's availability, or in the past, gets rejected.
+ * ========================================================================= */
+
+const TimeSlots = require('./timeslots');
+
+/* The statuses during which a booked slot is genuinely held. Leaving this set
+ * for any reason releases the slot. */
+const SLOT_HOLDING_STATUSES = ['proposedTime', 'scheduled'];
+
+exports.bookSlot = onCall(async (req) => {
+  requireAuth(req);
+  const uid = req.auth.uid;
+  const d = req.data || {};
+  const requestId = String(d.requestId || '');
+  const date = String(d.date || '');
+  const startTime = String(d.startTime || '');
+
+  if (!requestId || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(startTime)) {
+    throw new HttpsError('invalid-argument', 'requestId, date and startTime are required');
+  }
+
+  const requestRef = db.collection('requests').doc(requestId);
+  const requestSnap = await requestRef.get();
+  if (!requestSnap.exists) throw new HttpsError('not-found', 'No such request');
+  const request = requestSnap.data();
+
+  if (request.buyerId !== uid) {
+    throw new HttpsError('permission-denied', 'Only the buyer can claim a slot');
+  }
+  /* The deterministic ID stops two people taking the same slot, but it does
+   * nothing about someone claiming slots on a request that isn't their turn —
+   * that check has to be here. */
+  if (request.queuePosition !== 0) {
+    throw new HttpsError('failed-precondition', "It isn't your turn yet");
+  }
+  if (!['onHold', 'proposedTime'].includes(request.status)) {
+    throw new HttpsError('failed-precondition', 'This request is not open for scheduling');
+  }
+
+  const sellerSnap = await db.collection('users').doc(request.sellerId).get();
+  const seller = sellerSnap.exists ? sellerSnap.data() : {};
+  const windows = seller.availabilityWindows || [];
+  const tz = seller.timeZone;
+
+  if (!windows.length || !tz) {
+    throw new HttpsError('failed-precondition', "This seller hasn't set any availability");
+  }
+
+  const slotMinutes = TimeSlots.SLOT_MINUTES;
+  if (!TimeSlots.withinWindows(windows, date, startTime, slotMinutes)) {
+    throw new HttpsError('failed-precondition', "That time isn't in the seller's availability");
+  }
+
+  /* Recomputed here, never taken from the client. */
+  const startsAtMs = TimeSlots.zonedToUtc(date, startTime, tz);
+  if (startsAtMs <= Date.now()) {
+    throw new HttpsError('failed-precondition', 'That time has already passed');
+  }
+
+  /* Event-tagged listings only offer slots inside the convention window — the
+   * point of an event listing is meeting at the con, not at the seller's house
+   * next Tuesday. (M9 sets these fields; they're null until then.) */
+  const listingSnap = await db.collection('listings').doc(request.listingId).get();
+  const listing = listingSnap.exists ? listingSnap.data() : {};
+  if (listing.eventStartDate && startsAtMs < listing.eventStartDate.toMillis()) {
+    throw new HttpsError('failed-precondition', 'That time is before the event starts');
+  }
+  if (listing.eventEndDate && startsAtMs > listing.eventEndDate.toMillis()) {
+    throw new HttpsError('failed-precondition', 'That time is after the event ends');
+  }
+
+  const slotDocId = TimeSlots.slotId(request.sellerId, date, startTime);
+  const slotRef = db.collection('users').doc(request.sellerId)
+    .collection('bookedSlots').doc(slotDocId);
+
+  /* A buyer changing their mind should release the slot they had rather than
+   * silently hoarding two. Done before the create so a failed create doesn't
+   * leave them holding nothing. */
+  const previousSlotId = request.bookedSlotId;
+
+  try {
+    await slotRef.create({
+      date,
+      startTime,
+      endTime: TimeSlots.toHHMM(TimeSlots.toMinutes(startTime) + slotMinutes),
+      startsAt: admin.firestore.Timestamp.fromMillis(startsAtMs),
+      requestId,
+      gameEntryId: request.gameEntryId,
+      listingId: request.listingId,
+      buyerId: uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (err) {
+    /* ALREADY_EXISTS is the whole exclusivity mechanism firing, not a bug. It
+     * means somebody claimed this increment between the page rendering and the
+     * tap — which is exactly what it's for. */
+    if (err && (err.code === 6 || /already exists/i.test(err.message || ''))) {
+      throw new HttpsError('already-exists', 'Someone just took that slot — pick another');
+    }
+    throw err;
+  }
+
+  if (previousSlotId && previousSlotId !== slotDocId) {
+    await db.collection('users').doc(request.sellerId)
+      .collection('bookedSlots').doc(previousSlotId).delete().catch(() => {});
+  }
+
+  /* Deliberately `proposedTime`, never `scheduled`. Auto-book and chat
+   * negotiation are two ways of ARRIVING at a proposal; what happens after is
+   * identical, and the seller still gets the final Confirm/Decline. */
+  await requestRef.update({
+    status: 'proposedTime',
+    proposedTime: admin.firestore.Timestamp.fromMillis(startsAtMs),
+    proposedBy: uid,
+    method: 'pickup',
+    bookedSlotId: slotDocId,
+    /* The seller's response window. If they never answer, advanceExpiredHolds
+     * reverts this to onHold and releases the slot. */
+    holdExpiresAt: holdDeadline(Date.now()),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  return { slotId: slotDocId, startsAtMs, requestId };
+});
+
+/* ---- slot release --------------------------------------------------------
+ * A booked slot has to be freed whenever the request stops holding it —
+ * declined, cancelled, expired, or completed. Doing this in a trigger rather
+ * than in each of those call sites means there is one implementation, and it
+ * runs however the request got there, including from the expiry sweep.
+ *
+ * It also has to be a trigger for a plainer reason: storage.rules and
+ * firestore.rules both deny all client writes to bookedSlots, so no client
+ * could release its own slot even if we asked it to. */
+exports.onSlotHoldChange = onDocumentUpdated('requests/{requestId}', async (event) => {
+  const before = event.data.before.data();
+  const after = event.data.after.data();
+  if (!before || !after) return;
+
+  const heldBefore = SLOT_HOLDING_STATUSES.includes(before.status) && before.bookedSlotId;
+  const heldAfter = SLOT_HOLDING_STATUSES.includes(after.status) && after.bookedSlotId;
+  if (!heldBefore || heldAfter) return;
+
+  await db.collection('users').doc(before.sellerId)
+    .collection('bookedSlots').doc(before.bookedSlotId).delete().catch(() => {});
+
+  /* Clearing the pointer matters: leaving a stale bookedSlotId on the request
+   * would make a later re-book think it had a previous slot to release, and
+   * delete whatever now occupies that ID. */
+  if (after.bookedSlotId) {
+    await event.data.after.ref.update({ bookedSlotId: null }).catch(() => {});
+  }
+
+  console.log(`released slot ${before.bookedSlotId} (request went to ${after.status})`);
+});
+
 /* ---- shared -------------------------------------------------------------- */
 
 function requireAuth(req) {

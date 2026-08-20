@@ -836,6 +836,53 @@ select {
 .entry-cta { margin-top: .85rem; }
 .entry-cta .fine { margin: 0; }
 
+/* ---- Availability editor (M6) -------------------------------------------- */
+
+.avail { display: grid; gap: .4rem; margin-bottom: .75rem; }
+.avail-row {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  flex-wrap: wrap;
+  padding: .45rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--cream);
+}
+.avail-row.on { background: var(--paper); border-color: var(--navy); }
+.avail-day {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  min-width: 5.5rem;
+  font-weight: 650;
+  font-size: .9rem;
+  cursor: pointer;
+}
+.avail-day input { width: 20px; height: 20px; accent-color: var(--navy); }
+.avail-times { display: flex; align-items: center; gap: .4rem; flex: 1; }
+.avail-times input[type=time] {
+  flex: 1;
+  min-width: 6.5rem;
+  min-height: 38px;
+  padding: .3rem .5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--paper);
+  font: inherit;
+  font-size: .95rem;
+}
+.avail-times .dash { color: var(--muted); font-size: .85rem; }
+
+/* ---- Slot picker (M6) ---------------------------------------------------- */
+
+.slot-day { margin-bottom: 1.1rem; }
+.slot-day h4 { margin-bottom: .45rem; }
+.chip.slot { min-height: 42px; font-variant-numeric: tabular-nums; }
+.chip.slot:disabled { opacity: .5; }
+.slot-alt { color: var(--muted); font-size: .78em; }
+.chip.slot.on .slot-alt, .chip.slot:hover .slot-alt { color: inherit; opacity: .8; }
+
 /* ---- Overflow menu ------------------------------------------------------- */
 
 .overflow { position: relative; flex: none; }

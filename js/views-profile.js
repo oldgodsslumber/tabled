@@ -172,6 +172,8 @@ window.ProfileView = (function () {
           '<button class="btn" id="s-save">Save</button>' +
         '</div>' +
 
+        availabilitySection(me) +
+
         '<section class="block">' +
           '<h2>Blocked people</h2>' +
           '<div id="blocked-list">' +
@@ -189,6 +191,7 @@ window.ProfileView = (function () {
       '</div>';
 
     if (blockedIds.length) drawBlocked(blockedIds);
+    wireAvailability(root);
 
     U.$('#s-out', root).addEventListener('click', function () { App.signOut(); });
 
@@ -241,6 +244,105 @@ window.ProfileView = (function () {
           btn.disabled = false;
           btn.textContent = 'Save';
         });
+    });
+  }
+
+  /* ---- Availability (M6) --------------------------------------------------
+   * ONE standing weekly schedule that applies to every listing this person has,
+   * not a per-listing setting. That's deliberate: a seller's free Saturday is a
+   * fact about the seller, and duplicating it per listing means it's wrong on
+   * most of them within a month.
+   *
+   * The timezone is captured from the browser rather than asked for. Getting it
+   * from a dropdown is a worse experience and a worse answer — people move, and
+   * the browser already knows. It's shown so it can be sanity-checked. */
+  var DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  function availabilitySection(me) {
+    var windows = me.availabilityWindows || [];
+    var tz = me.timeZone || TimeSlots.currentZone();
+    var byDay = {};
+    windows.forEach(function (w) { byDay[Number(w.dayOfWeek)] = w; });
+
+    return '<section class="block">' +
+      '<h2>When can buyers meet you?</h2>' +
+      '<p class="fine">Set this once and it applies to every listing you have. ' +
+        'Whoever is first in line for a game can book a 30-minute slot in it, ' +
+        'and you still confirm before anything is final.</p>' +
+      '<div class="avail">' +
+        DAYS.map(function (name, i) {
+          var w = byDay[i];
+          return '<div class="avail-row' + (w ? ' on' : '') + '" data-day="' + i + '">' +
+            '<label class="avail-day">' +
+              '<input type="checkbox" data-avail-on="' + i + '"' + (w ? ' checked' : '') + '>' +
+              '<span>' + U.esc(name.slice(0, 3)) + '</span>' +
+            '</label>' +
+            '<div class="avail-times"' + (w ? '' : ' hidden') + '>' +
+              '<input type="time" step="1800" data-avail-start="' + i + '" ' +
+                'value="' + U.attr(w ? w.startTime : '10:00') + '">' +
+              '<span class="dash">to</span>' +
+              '<input type="time" step="1800" data-avail-end="' + i + '" ' +
+                'value="' + U.attr(w ? w.endTime : '14:00') + '">' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+      '<p class="fine">Times are yours — <strong>' + U.esc(tz) + '</strong>. ' +
+        'Buyers see them converted to their own clock, so nobody turns up an hour out.</p>' +
+      '<button class="btn ghost small" id="avail-save">Save availability</button>' +
+    '</section>';
+  }
+
+  function wireAvailability(root) {
+    var host = U.$('.avail', root);
+    if (!host) return;
+
+    U.on(host, '[data-avail-on]', function (e, t) {
+      var row = t.closest('.avail-row');
+      row.classList.toggle('on', t.checked);
+      U.$('.avail-times', row).hidden = !t.checked;
+    }, 'change');
+
+    U.$('#avail-save', root).addEventListener('click', function () {
+      var btn = this;
+      var windows = [];
+      var problem = null;
+
+      U.$$('.avail-row', root).forEach(function (row) {
+        var day = Number(row.dataset.day);
+        if (!U.$('[data-avail-on]', row).checked) return;
+        var start = U.$('[data-avail-start]', row).value;
+        var end = U.$('[data-avail-end]', row).value;
+        if (!start || !end) { problem = 'Every ticked day needs a start and end time.'; return; }
+        if (TimeSlots.toMinutes(end) - TimeSlots.toMinutes(start) < TimeSlots.SLOT_MINUTES) {
+          problem = DAYS[day] + ' needs to be at least ' + TimeSlots.SLOT_MINUTES +
+            ' minutes long — that\'s one slot.';
+          return;
+        }
+        windows.push({ dayOfWeek: day, startTime: start, endTime: end });
+      });
+
+      if (problem) { U.toast(problem, 'warn'); return; }
+
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      Store.saveProfile({
+        availabilityWindows: windows,
+        /* Re-captured on every save, so someone who moves gets corrected
+         * without having to know this field exists. */
+        timeZone: TimeSlots.currentZone()
+      }).then(function () {
+        U.toast(windows.length
+          ? 'Availability saved — buyers can book slots now'
+          : 'Availability cleared — buyers will negotiate times in chat instead');
+        btn.disabled = false;
+        btn.textContent = 'Save availability';
+      }).catch(function (err) {
+        console.error('[tabled] availability save failed', err);
+        U.toast('Could not save availability', 'bad');
+        btn.disabled = false;
+        btn.textContent = 'Save availability';
+      });
     });
   }
 

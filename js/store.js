@@ -277,6 +277,10 @@ window.Store = (function () {
         if (patch.geohash !== undefined) writable.geohash = patch.geohash;
         if (patch.countryCode !== undefined) writable.countryCode = patch.countryCode;
         if (patch.state !== undefined) writable.state = patch.state;
+        /* M6. The zone is stored alongside the windows because "Saturday 10:00"
+         * is a wall-clock time and means nothing without one. */
+        if (patch.availabilityWindows !== undefined) writable.availabilityWindows = patch.availabilityWindows;
+        if (patch.timeZone !== undefined) writable.timeZone = patch.timeZone;
         return fb.updateDoc(docRef('users', uid), writable);
       },
 
@@ -670,6 +674,36 @@ window.Store = (function () {
         /* Deliberately not touching updatedAt — reading a thread must not
          * reorder everyone's dashboard. */
         return fb.updateDoc(docRef('requests', id), patch).catch(function () {});
+      },
+
+      /* ---- Auto-book (M6) ---- */
+
+      /* Which of a seller's increments are already taken. Readable by any
+       * signed-in user by design — you have to know what's gone to be offered
+       * what's left — and it leaks nothing beyond "this person is busy then",
+       * which is the entire purpose of publishing availability. */
+      getBookedSlots: function (sellerId) {
+        return fb.getDocs(fb.query(
+          col('users', sellerId, 'bookedSlots'),
+          fb.where('startsAt', '>=', new Date()),
+          fb.limit(500)
+        )).then(function (qs) {
+          var out = [];
+          qs.forEach(function (s) { out.push(s.id); });
+          return out;
+        }).catch(function (err) {
+          /* A failure here must not hide the whole picker — worst case we
+           * offer a taken slot and the callable rejects it with the right
+           * message, which is a far better outcome than an empty list. */
+          console.warn('[tabled] booked slots read failed', err);
+          return [];
+        });
+      },
+
+      bookSlot: function (requestId, date, startTime) {
+        return callable('bookSlot', {
+          requestId: requestId, date: date, startTime: startTime
+        });
       }
     };
   }
@@ -695,6 +729,7 @@ window.Store = (function () {
            * the upgrade. */
           parsed.requests = parsed.requests || [];
           parsed.messages = parsed.messages || {};
+          parsed.slots = parsed.slots || {};
           return parsed;
         }
       } catch (e) { /* fall through to seed */ }
@@ -792,7 +827,7 @@ window.Store = (function () {
 
       return {
         users: users, games: games, listings: listings, entries: entries,
-        blocked: {}, reports: {}, requests: [], messages: {}
+        blocked: {}, reports: {}, requests: [], messages: {}, slots: {}
       };
     }
 
@@ -820,7 +855,12 @@ window.Store = (function () {
 
       saveProfile: function (uid, patch) {
         var u = db.users[uid] || {};
-        ['displayName', 'bio', 'photoURL', 'generalArea', 'geoPoint', 'geohash'].forEach(function (k) {
+        /* Must stay in step with the writable list in CloudBackend.saveProfile.
+         * A field missing here is silently dropped while Store.me() still shows
+         * it — the in-memory profile and the stored one diverge, and the bug
+         * only surfaces on reload or when someone else reads the profile. */
+        ['displayName', 'bio', 'photoURL', 'generalArea', 'geoPoint', 'geohash',
+          'countryCode', 'state', 'availabilityWindows', 'timeZone'].forEach(function (k) {
           if (patch[k] !== undefined) u[k] = patch[k];
         });
         db.users[uid] = u;
@@ -1112,8 +1152,10 @@ window.Store = (function () {
         var r = find(id);
         if (r) {
           var wasOpen = CFG.isOpenRequest(r.status);
+          var wasHolding = ['proposedTime', 'scheduled'].indexOf(r.status) !== -1 && !!r.bookedSlotId;
           Object.keys(patch).forEach(function (k) { r[k] = patch[k]; });
           r.updatedAt = Date.now();
+          this.releaseSlotIfDropped(r, wasHolding);
           /* Stands in for the onRequestStatusChange trigger: when a request
            * leaves the open set, whoever is behind it moves up. */
           if (wasOpen && !CFG.isOpenRequest(r.status)) {
@@ -1127,6 +1169,7 @@ window.Store = (function () {
       /* Demo-only. Stands in for advanceExpiredHolds so the promotion path is
        * exercisable without waiting 24 hours or deploying a scheduler. */
       runExpirySweep: function (nowMs) {
+        var self0 = this;
         var now = nowMs || Date.now();
         var touched = {}, expired = 0, reverted = 0;
         db.requests.forEach(function (r) {
@@ -1142,6 +1185,7 @@ window.Store = (function () {
             r.proposedBy = null;
             r.holdExpiresAt = now + CFG.QUEUE.holdHours * 3600000;
             r.updatedAt = now;
+            self0.releaseSlotIfDropped(r, true);
             reverted++;
           } else if (r.status === 'scheduled' && r.scheduledTime) {
             var t = U.toDate(r.scheduledTime);
@@ -1165,6 +1209,75 @@ window.Store = (function () {
         if (r) r[isBuyer ? 'lastReadBuyerAt' : 'lastReadSellerAt'] = Date.now();
         save();
         return Promise.resolve();
+      },
+
+      /* ---- Auto-book (M6), demo edition ----
+       * Mirrors the bookSlot callable, including the exclusivity failure — the
+       * demo store is a plain object, so "the key already exists" has to be
+       * checked explicitly where Firestore's .create() does it for us. */
+      getBookedSlots: function (sellerId) {
+        var now = Date.now();
+        return Promise.resolve(Object.keys(db.slots || {}).filter(function (id) {
+          var s = db.slots[id];
+          return s.sellerId === sellerId && s.startsAtMs > now;
+        }));
+      },
+
+      bookSlot: function (requestId, date, startTime) {
+        var r = find(requestId);
+        if (!r) return Promise.reject(new Error('No such request'));
+        if (r.buyerId !== myUid) return Promise.reject(new Error('Only the buyer can claim a slot'));
+        if (r.queuePosition !== 0) return Promise.reject(new Error("It isn't your turn yet"));
+
+        var seller = db.users[r.sellerId] || {};
+        var windows = seller.availabilityWindows || [];
+        var tz = seller.timeZone;
+        if (!windows.length || !tz) {
+          return Promise.reject(new Error("This seller hasn't set any availability"));
+        }
+        if (!TimeSlots.withinWindows(windows, date, startTime, TimeSlots.SLOT_MINUTES)) {
+          return Promise.reject(new Error("That time isn't in the seller's availability"));
+        }
+        var startsAtMs = TimeSlots.zonedToUtc(date, startTime, tz);
+        if (startsAtMs <= Date.now()) {
+          return Promise.reject(new Error('That time has already passed'));
+        }
+
+        db.slots = db.slots || {};
+        var id = TimeSlots.slotId(r.sellerId, date, startTime);
+        if (db.slots[id]) {
+          return Promise.reject(new Error('Someone just took that slot — pick another'));
+        }
+
+        if (r.bookedSlotId && r.bookedSlotId !== id) delete db.slots[r.bookedSlotId];
+
+        db.slots[id] = {
+          sellerId: r.sellerId, date: date, startTime: startTime,
+          endTime: TimeSlots.toHHMM(TimeSlots.toMinutes(startTime) + TimeSlots.SLOT_MINUTES),
+          startsAtMs: startsAtMs, requestId: requestId,
+          gameEntryId: r.gameEntryId, listingId: r.listingId,
+          buyerId: myUid, createdAt: Date.now()
+        };
+
+        r.status = 'proposedTime';
+        r.proposedTime = new Date(startsAtMs);
+        r.proposedBy = myUid;
+        r.method = 'pickup';
+        r.bookedSlotId = id;
+        r.holdExpiresAt = Date.now() + CFG.QUEUE.holdHours * 3600000;
+        r.updatedAt = Date.now();
+
+        save();
+        return Promise.resolve({ slotId: id, startsAtMs: startsAtMs, requestId: requestId });
+      },
+
+      /* Stands in for the onSlotHoldChange trigger. */
+      releaseSlotIfDropped: function (r, wasHolding) {
+        if (!wasHolding) return;
+        var stillHolding = ['proposedTime', 'scheduled'].indexOf(r.status) !== -1 && r.bookedSlotId;
+        if (stillHolding) return;
+        if (r.bookedSlotId && db.slots) delete db.slots[r.bookedSlotId];
+        r.bookedSlotId = null;
       }
     };
 
@@ -1316,6 +1429,11 @@ window.Store = (function () {
         }
       }
       return null;
+    },
+
+    getBookedSlots: function (sellerId) { return backend.getBookedSlots(sellerId); },
+    bookSlot: function (requestId, date, startTime) {
+      return backend.bookSlot(requestId, date, startTime);
     },
 
     /* Demo only — stands in for the advanceExpiredHolds scheduler so queue

@@ -237,7 +237,9 @@ window.ThreadView = (function () {
         '<div class="sched">' +
           '<p class="sched-state">No time agreed yet.' +
             holdCountdown(req, amSeller) + '</p>' +
-          '<button class="btn small" data-act="propose">Propose a time</button>' +
+          (amSeller ? '' : '<button class="btn small" data-act="slots">Pick a slot</button>') +
+          '<button class="btn ghost small" data-act="propose">' +
+            (amSeller ? 'Propose a time' : 'Suggest another time') + '</button>' +
         '</div>';
 
     } else if (req.status === 'proposedTime') {
@@ -290,6 +292,7 @@ window.ThreadView = (function () {
     U.on(host, '[data-act]', function (e, t) {
       var act = t.dataset.act;
       if (act === 'propose') proposeDialog(req);
+      else if (act === 'slots') slotDialog(req);
       else if (act === 'confirm') respond(req, true);
       else if (act === 'decline') respond(req, false);
       else if (act === 'cancel') cancel(req, amSeller);
@@ -325,6 +328,112 @@ window.ThreadView = (function () {
     return d.toLocaleString(undefined, {
       weekday: 'short', month: 'short', day: 'numeric',
       hour: 'numeric', minute: '2-digit'
+    });
+  }
+
+  /* ---- Auto-book slot picker (M6) ----------------------------------------
+   * One tap claims a 30-minute increment out of the seller's standing weekly
+   * availability. Exclusivity is the deterministic document ID, so a race here
+   * fails cleanly with "someone just took that" rather than double-booking.
+   *
+   * Everything is rendered in the VIEWER's local time — the buyer needs to know
+   * when to leave their own house. When the two zones differ, each slot also
+   * carries the seller's own clock, because "2pm your time" and "2pm their
+   * time" being different is exactly the thing that wastes an afternoon. */
+  function slotDialog(req) {
+    var m = U.modal('Pick a slot', U.spinner('Loading availability'));
+
+    Promise.all([
+      Store.getUser(req.sellerId),
+      Store.getBookedSlots(req.sellerId)
+    ]).then(function (res) {
+      var seller = res[0] || {};
+      var taken = res[1] || [];
+      var windows = seller.availabilityWindows || [];
+      var tz = seller.timeZone;
+
+      if (!windows.length || !tz) {
+        m.el.innerHTML = U.empty("No set availability",
+          (seller.displayName || 'This seller') + " hasn't published meeting times. " +
+          'Agree one in chat instead.') +
+          '<div class="modal-actions"><button class="btn" data-act="chat">Suggest a time</button></div>';
+        U.on(m.el, '[data-act="chat"]', function () { m.close(); proposeDialog(req); });
+        return;
+      }
+
+      var slots = TimeSlots.generateSlots(windows, tz, {
+        sellerId: req.sellerId,
+        taken: taken,
+        fromMs: Date.now()
+      });
+
+      if (!slots.length) {
+        m.el.innerHTML = U.empty('No open slots',
+          'Everything in the next two weeks is taken or already past. ' +
+          'Suggest a time in chat instead.') +
+          '<div class="modal-actions"><button class="btn" data-act="chat">Suggest a time</button></div>';
+        U.on(m.el, '[data-act="chat"]', function () { m.close(); proposeDialog(req); });
+        return;
+      }
+
+      var crossZone = !TimeSlots.sameOffset(tz, TimeSlots.currentZone());
+      var days = TimeSlots.groupByDay(slots, tz);
+
+      m.el.innerHTML =
+        (crossZone
+          ? '<p class="banner warn">' + U.esc(seller.displayName || 'The seller') +
+            ' is in ' + U.esc(tz) + '. Times below are in <strong>your</strong> local ' +
+            'time, with theirs in brackets.</p>'
+          : '') +
+        days.map(function (day) {
+          return '<div class="slot-day">' +
+            '<h4>' + U.esc(day.label) + '</h4>' +
+            '<div class="chip-row">' +
+              day.slots.map(function (s) {
+                var theirs = crossZone
+                  ? ' <span class="slot-alt">(' + U.esc(s.startTime) + ' their time)</span>'
+                  : '';
+                return '<button class="chip slot" data-date="' + U.attr(s.date) + '" ' +
+                  'data-start="' + U.attr(s.startTime) + '">' +
+                  U.esc(TimeSlots.localTimeLabel(s.startsAtMs)) + theirs + '</button>';
+              }).join('') +
+            '</div>' +
+          '</div>';
+        }).join('') +
+        '<p class="fine">Booking a slot reserves it and asks the seller to confirm. ' +
+          'Nothing is final until they do.</p>';
+
+      U.on(m.el, '.slot', function (e, t) {
+        var btn = t;
+        U.$$('.slot', m.el).forEach(function (b) { b.disabled = true; });
+        btn.textContent = 'Booking…';
+
+        Store.bookSlot(req.id, btn.dataset.date, btn.dataset.start).then(function () {
+          m.close();
+          U.toast('Slot booked — waiting on the seller to confirm');
+          return Store.sendMessage(req.id,
+            'Booked your ' + whenLabel(new Date(TimeSlots.zonedToUtc(
+              btn.dataset.date, btn.dataset.start, tz))) + ' slot.');
+        }).catch(function (err) {
+          console.error('[tabled] bookSlot failed', err);
+          var msg = (err && err.message) || '';
+          if (/already-exists|just took/i.test((err && err.code) + ' ' + msg)) {
+            /* The exclusivity mechanism firing, not a fault. Reopen with a
+             * fresh list rather than leaving a dead button on screen. */
+            U.toast('Someone just took that one — here are the rest', 'warn');
+            m.close();
+            slotDialog(req);
+            return;
+          }
+          U.toast(msg || 'Could not book that slot', 'bad');
+          U.$$('.slot', m.el).forEach(function (b) { b.disabled = false; });
+          btn.textContent = TimeSlots.localTimeLabel(
+            TimeSlots.zonedToUtc(btn.dataset.date, btn.dataset.start, tz));
+        });
+      });
+    }).catch(function (err) {
+      console.error('[tabled] slot load failed', err);
+      m.el.innerHTML = U.empty('Could not load availability', '');
     });
   }
 
