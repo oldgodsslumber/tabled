@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260819c';
+  var BUILD = '20260820a';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -172,6 +172,29 @@ window.CFG = (function () {
     gravity: 1.5
   };
 
+  /* ---- Hold & queue (M5) -------------------------------------------------
+   * The first person to request a game entry becomes the holder; everyone
+   * after joins the queue in order rather than being turned away.
+   *
+   * These durations are display copies. The clock that actually decides is in
+   * functions/index.js (HOLD_HOURS / GRACE_HOURS) — the client cannot be
+   * trusted with expiry, since a browser that never calls home would hold an
+   * item forever. Change both together or the countdown lies.
+   *
+   * Both numbers are starting points, expected to be tuned once real usage
+   * shows whether 24h reads as generous or stingy. */
+  var QUEUE = {
+    holdHours: 24,
+    graceHours: 12,
+    /* The statuses that occupy a place in the queue. Anything else has left
+     * it. Mirrors OPEN_STATUSES in functions/index.js. */
+    openStatuses: ['queued', 'onHold', 'proposedTime', 'scheduled']
+  };
+
+  function isOpenRequest(status) {
+    return QUEUE.openStatuses.indexOf(status) !== -1;
+  }
+
   /* ---- Distance ----------------------------------------------------------
    * Radius options for the "near me" filter, in miles. */
   var RADII = [5, 10, 25, 50, 100];
@@ -219,6 +242,8 @@ window.CFG = (function () {
     FULFILLMENT: FULFILLMENT,
     GEO: GEO,
     inUsBox: inUsBox,
+    QUEUE: QUEUE,
+    isOpenRequest: isOpenRequest,
     REPORT_REASONS: REPORT_REASONS,
     SAFETY: SAFETY,
     HOT: HOT,

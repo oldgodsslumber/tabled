@@ -22,7 +22,7 @@
 
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
-const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { onDocumentCreated, onDocumentUpdated } = require('firebase-functions/v2/firestore');
 const { defineSecret } = require('firebase-functions/params');
 const { setGlobalOptions } = require('firebase-functions/v2');
 const admin = require('firebase-admin');
@@ -390,6 +390,345 @@ exports.onReportCreate = onDocumentCreated('reports/{reportId}', async (event) =
   /* message and event reports are recorded but have no automatic consequence —
    * hiding a chat message on a report count would be trivially weaponizable
    * between two people who are already arguing. */
+});
+
+/* =========================================================================
+ * M5 — Hold, queue and expiry
+ *
+ * The whole point of this milestone is that a queue nobody can cheat. That
+ * forces one structural decision: requests are created ONLY by the callable
+ * below, never by a client write, and `firestore.rules` denies client creates
+ * outright.
+ *
+ * The reason is simple. Queue position cannot be computed by the client,
+ * because a client that writes its own `queuePosition` can write `0`. It also
+ * cannot be assigned by an onCreate trigger, because between the write and the
+ * trigger the document exists with a position nobody validated, and two
+ * simultaneous requests would both read "the queue is empty". Only a
+ * transaction that reads the current queue and writes the new request together
+ * gets this right.
+ * ========================================================================= */
+
+const HOLD_HOURS = 24;    /* holder's window to land on a time */
+const GRACE_HOURS = 12;   /* after a scheduled time passes with no completion */
+
+/* The statuses that occupy a place in the queue. Anything else (completed,
+ * cancelled, expired) has left it. */
+const OPEN_STATUSES = ['queued', 'onHold', 'proposedTime', 'scheduled'];
+
+function holdDeadline(fromMs) {
+  return admin.firestore.Timestamp.fromMillis(fromMs + HOLD_HOURS * 3600000);
+}
+
+/* Recompute a game entry's queue from the requests that actually exist.
+ *
+ * Derived, never incremented. An incremented counter drifts the first time any
+ * write is retried or lost, and a queue that says "3 waiting" with two people
+ * in it is worse than no queue at all. Everything here — positions, entry
+ * status, hold deadline — is recalculated from the open request set each time,
+ * so the state is self-healing.
+ *
+ * Must be called inside a transaction that has already read what it needs.
+ */
+async function resyncQueue(tx, listingId, gameEntryId, nowMs) {
+  const entryRef = db.collection('listings').doc(listingId)
+    .collection('gameEntries').doc(gameEntryId);
+
+  const openSnap = await tx.get(
+    db.collection('requests')
+      .where('gameEntryId', '==', gameEntryId)
+      .where('status', 'in', OPEN_STATUSES)
+  );
+
+  /* Sorted here rather than with orderBy so the query needs only the
+   * (gameEntryId, status) index. These sets are single digits. */
+  const open = openSnap.docs.slice().sort((a, b) => {
+    const at = a.data().createdAt, bt = b.data().createdAt;
+    return (at ? at.toMillis() : 0) - (bt ? bt.toMillis() : 0);
+  });
+
+  const entrySnap = await tx.get(entryRef);
+  const sold = entrySnap.exists && entrySnap.data().status === 'sold';
+
+  if (!open.length) {
+    if (!sold) {
+      tx.update(entryRef, {
+        status: 'active',
+        currentHoldRequestId: null,
+        holdExpiresAt: null,
+        queueCount: 0
+      });
+    } else {
+      tx.update(entryRef, { queueCount: 0 });
+    }
+    return;
+  }
+
+  open.forEach((doc, i) => {
+    const d = doc.data();
+    const patch = {};
+    if (d.queuePosition !== i) patch.queuePosition = i;
+
+    if (i === 0 && d.status === 'queued') {
+      /* Promoted to holder: a fresh full window, not the remainder of
+       * someone else's. They've only just been told it's their turn. */
+      patch.status = 'onHold';
+      patch.holdExpiresAt = holdDeadline(nowMs);
+      patch.promotedAt = admin.firestore.Timestamp.fromMillis(nowMs);
+    }
+    if (Object.keys(patch).length) {
+      patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+      tx.update(doc.ref, patch);
+    }
+  });
+
+  const holder = open[0];
+  if (!sold) {
+    tx.update(entryRef, {
+      status: 'onHold',
+      currentHoldRequestId: holder.id,
+      holdExpiresAt: holder.data().holdExpiresAt || holdDeadline(nowMs),
+      queueCount: open.length
+    });
+  } else {
+    tx.update(entryRef, { queueCount: open.length });
+  }
+}
+
+/* ---- createRequest ------------------------------------------------------- */
+
+exports.createRequest = onCall(async (req) => {
+  requireAuth(req);
+  const uid = req.auth.uid;
+  const d = req.data || {};
+  const listingId = String(d.listingId || '');
+  const gameEntryId = String(d.gameEntryId || '');
+
+  if (!listingId || !gameEntryId) {
+    throw new HttpsError('invalid-argument', 'listingId and gameEntryId are required');
+  }
+
+  const listingRef = db.collection('listings').doc(listingId);
+  const entryRef = listingRef.collection('gameEntries').doc(gameEntryId);
+  const nowMs = Date.now();
+
+  const result = await db.runTransaction(async (tx) => {
+    const listingSnap = await tx.get(listingRef);
+    if (!listingSnap.exists) throw new HttpsError('not-found', 'No such listing');
+    const listing = listingSnap.data();
+
+    if (listing.status !== 'active') {
+      throw new HttpsError('failed-precondition', 'That listing is no longer available');
+    }
+    if (listing.sellerId === uid) {
+      throw new HttpsError('failed-precondition', "You can't request your own listing");
+    }
+
+    const entrySnap = await tx.get(entryRef);
+    if (!entrySnap.exists) throw new HttpsError('not-found', 'No such game');
+    if (entrySnap.data().status === 'sold') {
+      throw new HttpsError('failed-precondition', 'That game is already sold');
+    }
+
+    /* Blocking is checked here as well as in the rules, because the rules
+     * never see this write — the admin SDK bypasses them entirely. Every
+     * guard the client-create path used to get from rules has to be
+     * re-established in this function or it silently disappears. */
+    const blocked = await tx.get(
+      db.collection('users').doc(listing.sellerId).collection('blocked').doc(uid));
+    if (blocked.exists) {
+      throw new HttpsError('permission-denied', "You can't request from this seller");
+    }
+
+    const meSnap = await tx.get(db.collection('users').doc(uid));
+    if (meSnap.exists && meSnap.data().restricted === true) {
+      throw new HttpsError('permission-denied',
+        'Your account is restricted while reports against it are reviewed');
+    }
+
+    const openSnap = await tx.get(
+      db.collection('requests')
+        .where('gameEntryId', '==', gameEntryId)
+        .where('status', 'in', OPEN_STATUSES)
+    );
+
+    const mine = openSnap.docs.find((doc) => doc.data().buyerId === uid);
+    if (mine) {
+      /* Not an error — they almost certainly want the thread they already
+       * have. Returning it is friendlier than refusing. */
+      return { requestId: mine.id, queuePosition: mine.data().queuePosition, existing: true };
+    }
+
+    const position = openSnap.size;
+    const newRef = db.collection('requests').doc();
+    const meProfile = meSnap.exists ? meSnap.data() : {};
+    const entry = entrySnap.data();
+
+    tx.set(newRef, {
+      listingId,
+      gameEntryId,
+      buyerId: uid,
+      sellerId: listing.sellerId,
+      /* Denormalized display copies so the dashboard lists threads without
+       * opening a listing, profile or entry per row. */
+      buyerName: meProfile.displayName || 'Buyer',
+      buyerPhoto: meProfile.photoURL || null,
+      sellerName: listing.sellerName || '',
+      sellerPhoto: listing.sellerPhoto || null,
+      listingTitle: listing.title || '',
+      gameName: entry.name || 'Game',
+      coverPhoto: (entry.photos && entry.photos[0]) || listing.coverPhoto || null,
+      askingPrice: typeof entry.askingPrice === 'number' ? entry.askingPrice : null,
+
+      status: position === 0 ? 'onHold' : 'queued',
+      queuePosition: position,
+      /* Only the holder is on the clock. Everyone else is waiting on them. */
+      holdExpiresAt: position === 0 ? holdDeadline(nowMs) : null,
+      promotedAt: position === 0 ? admin.firestore.Timestamp.fromMillis(nowMs) : null,
+
+      proposedTime: null,
+      proposedBy: null,
+      scheduledTime: null,
+      method: null,
+      bookedSlotId: null,
+      feePaid: false,
+      lastMessageAt: null,
+      lastMessageText: '',
+      lastMessageSenderId: null,
+      lastReadBuyerAt: null,
+      lastReadSellerAt: null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    tx.update(entryRef, {
+      status: 'onHold',
+      currentHoldRequestId: position === 0 ? newRef.id : (entry.currentHoldRequestId || newRef.id),
+      holdExpiresAt: position === 0 ? holdDeadline(nowMs) : (entry.holdExpiresAt || null),
+      queueCount: position + 1
+    });
+
+    tx.update(listingRef, {
+      requestCount: admin.firestore.FieldValue.increment(1)
+    });
+
+    return { requestId: newRef.id, queuePosition: position, existing: false };
+  });
+
+  return result;
+});
+
+/* ---- queue advancement on status change ---------------------------------- */
+
+/* When a request leaves the open set — cancelled, expired, completed — the
+ * person behind it moves up. Doing this in a trigger rather than in each place
+ * that closes a request means there is exactly one implementation of "what
+ * happens next", and it runs no matter how the request got closed. */
+exports.onRequestStatusChange = onDocumentUpdated('requests/{requestId}', async (event) => {
+  const before = event.data.before.data();
+  const after = event.data.after.data();
+  if (!before || !after) return;
+
+  const wasOpen = OPEN_STATUSES.includes(before.status);
+  const isOpen = OPEN_STATUSES.includes(after.status);
+  if (wasOpen === isOpen) return;   /* still in the queue, or still out of it */
+
+  const nowMs = Date.now();
+  await db.runTransaction(async (tx) => {
+    await resyncQueue(tx, after.listingId, after.gameEntryId, nowMs);
+  });
+
+  if (wasOpen && !isOpen) {
+    console.log(`request ${event.params.requestId} left the queue (${after.status}) ` +
+      `- resynced entry ${after.gameEntryId}`);
+  }
+});
+
+/* ---- advanceExpiredHolds ------------------------------------------------- */
+
+/* Two kinds of expiry, deliberately treated differently:
+ *
+ *   1. A holder who never landed on a time within HOLD_HOURS. Their hold
+ *      expires and the queue moves up.
+ *
+ *   2. A `proposedTime` the seller never answered. This reverts to `onHold`
+ *      with a fresh window rather than expiring the buyer — they already acted
+ *      by proposing, and a slow seller shouldn't cost them their place.
+ *
+ * Plus the no-show case: a `scheduled` time that came and went with no mutual
+ * completion, after a GRACE_HOURS cushion.
+ */
+exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
+  const now = admin.firestore.Timestamp.now();
+  const nowMs = now.toMillis();
+  const touched = new Map();   /* key -> {listingId, gameEntryId} */
+  let expired = 0, reverted = 0, noShows = 0;
+
+  const remember = (d) => {
+    touched.set(`${d.listingId}/${d.gameEntryId}`,
+      { listingId: d.listingId, gameEntryId: d.gameEntryId });
+  };
+
+  /* 1. Holders who ran out of time. */
+  const lapsed = await db.collection('requests')
+    .where('status', '==', 'onHold')
+    .where('holdExpiresAt', '<=', now)
+    .limit(300).get();
+
+  for (const doc of lapsed.docs) {
+    await doc.ref.update({
+      status: 'expired',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    remember(doc.data());
+    expired++;
+  }
+
+  /* 2. Proposals the seller never answered. The buyer keeps position 0. */
+  const stale = await db.collection('requests')
+    .where('status', '==', 'proposedTime')
+    .where('holdExpiresAt', '<=', now)
+    .limit(300).get();
+
+  for (const doc of stale.docs) {
+    await doc.ref.update({
+      status: 'onHold',
+      proposedTime: null,
+      proposedBy: null,
+      holdExpiresAt: holdDeadline(nowMs),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    reverted++;
+  }
+
+  /* 3. No-shows: a scheduled time plus the grace cushion, with no completion. */
+  const graceCutoff = admin.firestore.Timestamp.fromMillis(nowMs - GRACE_HOURS * 3600000);
+  const missed = await db.collection('requests')
+    .where('status', '==', 'scheduled')
+    .where('scheduledTime', '<=', graceCutoff)
+    .limit(300).get();
+
+  for (const doc of missed.docs) {
+    await doc.ref.update({
+      status: 'expired',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    remember(doc.data());
+    noShows++;
+  }
+
+  /* The onRequestStatusChange trigger will also fire for each of these, but
+   * resyncing here too makes the sweep self-contained and idempotent —
+   * resyncQueue derives everything from scratch, so running it twice is
+   * harmless and running it zero times is not. */
+  for (const t of touched.values()) {
+    await db.runTransaction(async (tx) => {
+      await resyncQueue(tx, t.listingId, t.gameEntryId, nowMs);
+    });
+  }
+
+  console.log(`advanceExpiredHolds: ${expired} holds expired, ${reverted} proposals ` +
+    `reverted, ${noShows} no-shows, ${touched.size} entries resynced`);
 });
 
 /* ---- shared -------------------------------------------------------------- */

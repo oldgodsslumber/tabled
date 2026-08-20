@@ -78,7 +78,13 @@ window.DashboardView = (function () {
      * the last chat line, because "confirm this time" is the thing that's
      * actually waiting on you. */
     var preview;
-    if (r.status === 'proposedTime') {
+    if (r.status === 'queued') {
+      /* Position beats the last chat line here: when you're waiting, where you
+       * are in the queue is the only thing you actually want to know. */
+      preview = amSeller
+        ? (r.buyerName || 'Someone') + ' is #' + (r.queuePosition + 1) + ' in line'
+        : "You're #" + (r.queuePosition + 1) + ' in line';
+    } else if (r.status === 'proposedTime') {
       preview = (r.proposedBy === me ? 'Waiting on ' : 'Needs your answer: ') + when(r.proposedTime);
     } else if (r.status === 'scheduled') {
       preview = '✓ ' + when(r.scheduledTime);
@@ -108,8 +114,8 @@ window.DashboardView = (function () {
 
   function statusBadge(r, amSeller) {
     var map = {
-      queued: ['In queue', ''],
-      onHold: ['Talking', ''],
+      queued: ['#' + (r.queuePosition + 1) + ' in line', ''],
+      onHold: ['Your turn', 'hold'],
       proposedTime: [amSeller ? 'Needs your OK' : 'Proposed', 'hold'],
       scheduled: ['Scheduled', 'verified'],
       completed: ['Completed', 'verified'],

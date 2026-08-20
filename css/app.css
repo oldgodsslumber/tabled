@@ -735,7 +735,9 @@ select {
 .sched-state { margin: 0; flex: 1; min-width: 12rem; font-size: .9rem; }
 .sched .fine { flex-basis: 100%; margin: 0; }
 .sched-actions { display: flex; gap: .4rem; }
+.sched.queued    { background: var(--navy-050); border-bottom-color: #d7dcf0; }
 .sched.proposed  { background: var(--warn-bg); border-bottom-color: #f0dfae; }
+.hold-warn { color: var(--warn); font-weight: 600; }
 .sched.confirmed { background: var(--good-bg); border-bottom-color: #cfe6d9; }
 .sched.closed    { background: var(--line-soft); color: var(--muted); }
 .cancel-req {

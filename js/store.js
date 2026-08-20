@@ -550,44 +550,15 @@ window.Store = (function () {
 
       /* ---- Requests & chat (M4) ---- */
 
-      /* Is anyone already talking to the seller about this specific game?
-       * M4 is first-come-first-served — the queue that lets a second person
-       * wait in line arrives in M5, and until then a taken game says so
-       * instead of quietly creating a second competing thread. */
-      findActiveRequest: function (gameEntryId) {
-        return fb.getDocs(fb.query(col('requests'),
-          fb.where('gameEntryId', '==', gameEntryId),
-          fb.where('status', 'in', ['queued', 'onHold', 'proposedTime', 'scheduled']),
-          fb.limit(1)
-        )).then(function (qs) {
-          var found = null;
-          qs.forEach(function (s) { if (!found) found = snapData(s); });
-          return found;
+      /* M5: creation goes through the callable, which assigns queue position
+       * inside a transaction. The client sends only what it's asking for —
+       * every denormalized field on the request is filled in server-side from
+       * documents the client can't forge. */
+      createRequest: function (listingId, gameEntryId) {
+        return callable('createRequest', {
+          listingId: listingId,
+          gameEntryId: gameEntryId
         });
-      },
-
-      createRequest: function (req) {
-        var ref = fb.doc(col('requests'));
-        return fb.setDoc(ref, Object.assign({}, req, {
-          status: 'onHold',
-          /* Everyone is the holder in M4. M5 turns this into a real position
-           * and the field is already here so that migration is a value change,
-           * not a schema change. */
-          queuePosition: 0,
-          proposedTime: null,
-          proposedBy: null,
-          scheduledTime: null,
-          method: null,
-          bookedSlotId: null,
-          feePaid: false,
-          lastMessageAt: null,
-          lastMessageText: '',
-          lastMessageSenderId: null,
-          lastReadBuyerAt: null,
-          lastReadSellerAt: null,
-          createdAt: fb.serverTimestamp(),
-          updatedAt: fb.serverTimestamp()
-        })).then(function () { return ref.id; });
       },
 
       getRequest: function (id) {
@@ -1002,27 +973,102 @@ window.Store = (function () {
        * dataset is a handful of documents, and it means the chat view exercises
        * the same real-time code path it will use against Firestore. */
 
-      findActiveRequest: function (gameEntryId) {
-        var hit = db.requests.filter(function (r) {
-          return r.gameEntryId === gameEntryId &&
-            ['queued', 'onHold', 'proposedTime', 'scheduled'].indexOf(r.status) !== -1;
-        })[0];
-        return Promise.resolve(clone(hit) || null);
-      },
+      /* M5 queue logic, mirrored from the createRequest callable. Kept
+       * faithful to it — including refusing a self-request and returning an
+       * existing thread instead of a duplicate — so demo mode exercises the
+       * real behaviour rather than a simplified stand-in that hides bugs. */
+      createRequest: function (listingId, gameEntryId) {
+        var listing = db.listings.filter(function (l) { return l.id === listingId; })[0];
+        if (!listing) return Promise.reject(new Error('No such listing'));
+        var entry = (db.entries[listingId] || []).filter(function (e) { return e.id === gameEntryId; })[0];
+        if (!entry) return Promise.reject(new Error('No such game'));
+        if (listing.sellerId === myUid) return Promise.reject(new Error("You can't request your own listing"));
+        if (entry.status === 'sold') return Promise.reject(new Error('That game is already sold'));
 
-      createRequest: function (req) {
+        var open = db.requests.filter(function (r) {
+          return r.gameEntryId === gameEntryId && CFG.isOpenRequest(r.status);
+        });
+        var mine = open.filter(function (r) { return r.buyerId === myUid; })[0];
+        if (mine) {
+          return Promise.resolve({ requestId: mine.id, queuePosition: mine.queuePosition, existing: true });
+        }
+
+        var position = open.length;
         var id = U.uid('r_');
-        db.requests.push(Object.assign({ id: id }, req, {
-          status: 'onHold', queuePosition: 0,
+        var me = db.users[myUid] || {};
+        var now = Date.now();
+        var deadline = now + CFG.QUEUE.holdHours * 3600000;
+
+        db.requests.push({
+          id: id, listingId: listingId, gameEntryId: gameEntryId,
+          buyerId: myUid, sellerId: listing.sellerId,
+          buyerName: me.displayName || 'Buyer', buyerPhoto: me.photoURL || null,
+          sellerName: listing.sellerName || '', sellerPhoto: listing.sellerPhoto || null,
+          listingTitle: listing.title || '', gameName: entry.name || 'Game',
+          coverPhoto: (entry.photos && entry.photos[0]) || listing.coverPhoto || null,
+          askingPrice: typeof entry.askingPrice === 'number' ? entry.askingPrice : null,
+          status: position === 0 ? 'onHold' : 'queued',
+          queuePosition: position,
+          holdExpiresAt: position === 0 ? deadline : null,
+          promotedAt: position === 0 ? now : null,
           proposedTime: null, proposedBy: null, scheduledTime: null,
           method: null, bookedSlotId: null, feePaid: false,
           lastMessageAt: null, lastMessageText: '', lastMessageSenderId: null,
           lastReadBuyerAt: null, lastReadSellerAt: null,
-          createdAt: Date.now(), updatedAt: Date.now()
-        }));
+          createdAt: now, updatedAt: now
+        });
         db.messages[id] = [];
+
+        entry.status = 'onHold';
+        if (position === 0) {
+          entry.currentHoldRequestId = id;
+          entry.holdExpiresAt = deadline;
+        }
+        entry.queueCount = position + 1;
+        listing.requestCount = (listing.requestCount || 0) + 1;
+
         save();
-        return Promise.resolve(id);
+        return Promise.resolve({ requestId: id, queuePosition: position, existing: false });
+      },
+
+      /* Mirror of resyncQueue in functions/index.js. Derived from the open
+       * request set every time rather than incremented — a counter that drifts
+       * once stays wrong, and "3 waiting" with two people in the queue is
+       * worse than no queue display at all. */
+      resyncQueue: function (listingId, gameEntryId) {
+        var entry = (db.entries[listingId] || []).filter(function (e) { return e.id === gameEntryId; })[0];
+        if (!entry) return;
+        var open = db.requests.filter(function (r) {
+          return r.gameEntryId === gameEntryId && CFG.isOpenRequest(r.status);
+        }).sort(function (a, b) { return (a.createdAt || 0) - (b.createdAt || 0); });
+
+        var now = Date.now();
+        if (!open.length) {
+          entry.queueCount = 0;
+          if (entry.status !== 'sold') {
+            entry.status = 'active';
+            entry.currentHoldRequestId = null;
+            entry.holdExpiresAt = null;
+          }
+          return;
+        }
+        open.forEach(function (r, i) {
+          r.queuePosition = i;
+          if (i === 0 && r.status === 'queued') {
+            /* A promoted holder gets a fresh full window, not the remainder
+             * of the window the previous holder burned through. */
+            r.status = 'onHold';
+            r.holdExpiresAt = now + CFG.QUEUE.holdHours * 3600000;
+            r.promotedAt = now;
+            r.updatedAt = now;
+          }
+        });
+        entry.queueCount = open.length;
+        if (entry.status !== 'sold') {
+          entry.status = 'onHold';
+          entry.currentHoldRequestId = open[0].id;
+          entry.holdExpiresAt = open[0].holdExpiresAt || (now + CFG.QUEUE.holdHours * 3600000);
+        }
       },
 
       getRequest: function (id) {
@@ -1065,11 +1111,53 @@ window.Store = (function () {
       updateRequest: function (id, patch) {
         var r = find(id);
         if (r) {
+          var wasOpen = CFG.isOpenRequest(r.status);
           Object.keys(patch).forEach(function (k) { r[k] = patch[k]; });
           r.updatedAt = Date.now();
+          /* Stands in for the onRequestStatusChange trigger: when a request
+           * leaves the open set, whoever is behind it moves up. */
+          if (wasOpen && !CFG.isOpenRequest(r.status)) {
+            this.resyncQueue(r.listingId, r.gameEntryId);
+          }
         }
         save();
         return Promise.resolve();
+      },
+
+      /* Demo-only. Stands in for advanceExpiredHolds so the promotion path is
+       * exercisable without waiting 24 hours or deploying a scheduler. */
+      runExpirySweep: function (nowMs) {
+        var now = nowMs || Date.now();
+        var touched = {}, expired = 0, reverted = 0;
+        db.requests.forEach(function (r) {
+          if (r.status === 'onHold' && r.holdExpiresAt && r.holdExpiresAt <= now) {
+            r.status = 'expired'; r.updatedAt = now;
+            touched[r.listingId + '/' + r.gameEntryId] = [r.listingId, r.gameEntryId];
+            expired++;
+          } else if (r.status === 'proposedTime' && r.holdExpiresAt && r.holdExpiresAt <= now) {
+            /* The buyer already acted by proposing; a slow seller shouldn't
+             * cost them their place. Back to holder with a fresh window. */
+            r.status = 'onHold';
+            r.proposedTime = null;
+            r.proposedBy = null;
+            r.holdExpiresAt = now + CFG.QUEUE.holdHours * 3600000;
+            r.updatedAt = now;
+            reverted++;
+          } else if (r.status === 'scheduled' && r.scheduledTime) {
+            var t = U.toDate(r.scheduledTime);
+            if (t && t.getTime() + CFG.QUEUE.graceHours * 3600000 <= now) {
+              r.status = 'expired'; r.updatedAt = now;
+              touched[r.listingId + '/' + r.gameEntryId] = [r.listingId, r.gameEntryId];
+              expired++;
+            }
+          }
+        });
+        var self = this;
+        Object.keys(touched).forEach(function (k) {
+          self.resyncQueue(touched[k][0], touched[k][1]);
+        });
+        save();
+        return Promise.resolve({ expired: expired, reverted: reverted });
       },
 
       markRead: function (id, isBuyer) {
@@ -1209,9 +1297,34 @@ window.Store = (function () {
     uploadPhoto: function (blob) { return backend.uploadPhoto(myUid, blob); },
     submitReport: function (r) { return backend.submitReport(r); },
 
-    /* ---- requests & chat (M4) ---- */
-    findActiveRequest: function (gameEntryId) { return backend.findActiveRequest(gameEntryId); },
-    createRequest: function (req) { return backend.createRequest(req); },
+    /* ---- requests & chat (M4) + hold/queue (M5) ---- */
+    createRequest: function (listingId, gameEntryId) {
+      return backend.createRequest(listingId, gameEntryId);
+    },
+
+    /* Do I already have an open request on this game entry?
+     *
+     * Answered from the live myRequests subscription rather than by querying,
+     * because that subscription is already streaming every request I'm party
+     * to. A per-entry query on the listing page would be one extra read per
+     * game, per view, for data sitting in memory. */
+    myRequestFor: function (gameEntryId) {
+      for (var i = 0; i < myRequests.length; i++) {
+        var r = myRequests[i];
+        if (r.gameEntryId === gameEntryId && r.buyerId === myUid && CFG.isOpenRequest(r.status)) {
+          return r;
+        }
+      }
+      return null;
+    },
+
+    /* Demo only — stands in for the advanceExpiredHolds scheduler so queue
+     * promotion is testable without waiting a day. Absent in cloud mode. */
+    runExpirySweep: function (nowMs) {
+      return backend.runExpirySweep
+        ? backend.runExpirySweep(nowMs)
+        : Promise.reject(new Error('Expiry runs server-side in cloud mode'));
+    },
     getRequest: function (id) { return backend.getRequest(id); },
     watchRequest: function (id, cb) { return backend.watchRequest(id, cb); },
     watchMessages: function (id, cb) { return backend.watchMessages(id, cb); },

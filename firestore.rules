@@ -249,16 +249,21 @@ service cloud.firestore {
 
       allow read: if isParticipant();
 
-      allow create: if isUser(request.resource.data.buyerId)
-        && notRestricted()
-        // You cannot open a request against someone who has blocked you.
-        && !exists(/databases/$(database)/documents/users/$(request.resource.data.sellerId)/blocked/$(request.auth.uid))
-        && request.resource.data.status in ['queued', 'onHold']
-        && request.resource.data.feePaid == false
-        && request.resource.data.buyerId != request.resource.data.sellerId
-        // Nothing may arrive pre-scheduled or pre-read.
-        && request.resource.data.scheduledTime == null
-        && request.resource.data.proposedTime == null;
+      // Requests are created ONLY by the createRequest callable (M5), never by
+      // a client write.
+      //
+      // Queue position is why. A client that writes its own queuePosition can
+      // write 0, and rules cannot count documents to check it. An onCreate
+      // trigger can't fix it either: the document would exist briefly with an
+      // unvalidated position, and two simultaneous requests would both read
+      // "the queue is empty". Only a transaction that reads the queue and
+      // writes the request together is correct, and that has to be a function.
+      //
+      // Every guard this rule used to apply — blocking, restriction, no
+      // self-requests, nothing pre-scheduled — now lives in that callable,
+      // because the admin SDK bypasses these rules entirely. Moving a check
+      // server-side means re-establishing it there, not assuming it survives.
+      allow create: if false;
 
       // Marking a thread read is always allowed, including on a completed
       // trade -- it's per-user bookkeeping, not trade state, and it's the only

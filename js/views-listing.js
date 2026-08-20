@@ -30,18 +30,11 @@ window.ListingView = (function () {
       })
       .then(function (g) {
         games = g;
-        /* M4 is first-come-first-served: one open request per game entry. The
-         * queue that lets a second person wait in line arrives in M5, so until
-         * then a taken game has to say so rather than silently opening a second
-         * competing thread. One read per entry, and only on the detail view. */
-        return Promise.all(entries.map(function (e) {
-          return Store.findActiveRequest(e.id).catch(function () { return null; });
-        }));
-      })
-      .then(function (reqs) {
-        var claims = {};
-        entries.forEach(function (e, i) { if (reqs[i]) claims[e.id] = reqs[i]; });
-        draw(root, listing, entries, games, claims);
+        /* M5: no per-entry query needed. The waiting count lives on the entry
+         * itself (`queueCount`, kept in sync server-side), and whether *I*
+         * already have a request is answered from the live myRequests
+         * subscription that's already streaming. */
+        draw(root, listing, entries, games);
         /* Owners viewing their own listing shouldn't inflate its Hot score. */
         if (!Store.isMe(listing.sellerId)) Store.bumpView(id);
       })
@@ -57,9 +50,8 @@ window.ListingView = (function () {
       });
   }
 
-  function draw(root, l, entries, games, claims) {
+  function draw(root, l, entries, games) {
     var mine = Store.isMe(l.sellerId);
-    claims = claims || {};
     var ful = [];
     if (l.fulfillment) {
       CFG.FULFILLMENT.forEach(function (f) { if (l.fulfillment[f.key]) ful.push(f.label); });
@@ -90,7 +82,7 @@ window.ListingView = (function () {
 
         '<div class="entries">' +
           entries.map(function (e) {
-            return entryHtml(e, games[String(e.bggId)], mine, claims[e.id]);
+            return entryHtml(e, games[String(e.bggId)], mine);
           }).join('') +
         '</div>' +
 
@@ -116,7 +108,7 @@ window.ListingView = (function () {
 
     U.on(root, '[data-request]', function (e, t) {
       var entry = entries.filter(function (x) { return x.id === t.dataset.request; })[0];
-      if (entry) startRequest(t, l, entry, games[String(entry.bggId)]);
+      if (entry) startRequest(t, l, entry);
     });
 
     var del = U.$('#del', root);
@@ -141,24 +133,48 @@ window.ListingView = (function () {
 
   /* One request button per game, because a request is against a specific game
    * entry — not the bundle. Someone wanting only the Wingspan out of a
-   * three-game listing shouldn't have to ask for all three. */
-  function requestBlock(e, mine, claim) {
-    if (mine) return '';
+   * three-game listing shouldn't have to ask for all three.
+   *
+   * M5: a claimed game no longer turns people away. They join the queue, and
+   * the wait is stated plainly up front — "you'd be 3rd" is information someone
+   * can act on, where a disabled button is just a dead end. */
+  function requestBlock(e, mine) {
+    if (mine) {
+      return e.queueCount
+        ? '<p class="fine">' + U.esc(U.plural(e.queueCount, 'person', 'people')) +
+          ' waiting on this one.</p>'
+        : '';
+    }
     if (e.status === 'sold') return '<p class="fine">Already sold.</p>';
 
-    if (claim) {
-      var iAmIn = claim.buyerId === Store.uid();
-      if (iAmIn) {
-        return '<a class="btn ghost small" href="#/thread/' + U.attr(claim.id) + '">' +
-          'Open your thread</a>';
-      }
-      return '<p class="fine">Someone is already talking to the seller about this one. ' +
-        'Queueing behind them arrives in a later milestone.</p>';
+    var myReq = Store.myRequestFor(e.id);
+    if (myReq) {
+      return '<a class="btn ghost small" href="#/thread/' + U.attr(myReq.id) + '">' +
+          'Open your thread</a>' +
+        '<p class="fine">' + U.esc(positionLabel(myReq)) + '</p>';
     }
-    return '<button class="btn small" data-request="' + U.attr(e.id) + '">Request this game</button>';
+
+    var waiting = e.queueCount || 0;
+    if (!waiting) {
+      return '<button class="btn small" data-request="' + U.attr(e.id) + '">Request this game</button>';
+    }
+    return '<button class="btn ghost small" data-request="' + U.attr(e.id) + '">' +
+        'Join the queue</button>' +
+      '<p class="fine">' + U.esc(U.plural(waiting, 'person', 'people')) + ' ahead of you. ' +
+        'If they don\'t follow through within ' + CFG.QUEUE.holdHours + ' hours, it passes to the next in line.</p>';
   }
 
-  function entryHtml(e, game, mine, claim) {
+  /* Position 0 is "it's your turn" — never "you are number zero". */
+  function positionLabel(r) {
+    if (r.queuePosition === 0) {
+      return r.status === 'scheduled'
+        ? "You're scheduled with the seller."
+        : "It's your turn — message the seller or propose a time.";
+    }
+    return 'You\'re #' + (r.queuePosition + 1) + ' in line.';
+  }
+
+  function entryHtml(e, game, mine) {
     var cond = CFG.condition(e.condition);
     var name = e.name || (game && game.name) || 'Untitled game';
     var year = game && game.yearPublished ? ' <span class="year">(' + game.yearPublished + ')</span>' : '';
@@ -209,66 +225,53 @@ window.ListingView = (function () {
         ? '<p class="fine">' + U.esc(game.categories.slice(0, 6).join(' · ')) + '</p>'
         : '') +
 
-      '<div class="entry-cta">' + requestBlock(e, mine, claim) + '</div>' +
+      '<div class="entry-cta">' + requestBlock(e, mine) + '</div>' +
     '</article>';
   }
 
-  /* Creating a request writes a denormalized snapshot of both people and the
-   * game onto the request document. The dashboard lists threads without opening
-   * a single listing, profile or gameEntry — and a listing edited or deleted
-   * later doesn't retroactively rewrite what the two of you were discussing. */
-  function startRequest(btn, listing, entry, game) {
+  /* M5: the client sends only which game it wants. Everything else — queue
+   * position, the denormalized display copies, the hold deadline, the
+   * requestCount bump — is decided server-side inside a transaction, because
+   * position is exactly the field a client would lie about.
+   *
+   * That also means the local guards below are courtesy, not enforcement. The
+   * callable re-checks blocking, restriction and self-requests itself; these
+   * exist only to fail fast with a better message. */
+  function startRequest(btn, listing, entry) {
     if (!Store.uid()) { U.toast('Sign in to request', 'warn'); return; }
     if (Store.isBlocked(listing.sellerId)) {
       U.toast('You have blocked this seller — unblock them to request', 'warn');
       return;
     }
 
+    var original = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Requesting…';
-    var me = Store.me();
 
-    /* Re-check right before writing. The page may have been open a while, and
-     * losing a race here should read as "someone got there first", not as a
-     * silent second thread. */
-    Store.findActiveRequest(entry.id).then(function (existing) {
-      if (existing) {
-        if (existing.buyerId === Store.uid()) { App.go('thread', { id: existing.id }); return null; }
-        U.toast('Someone just requested this one', 'warn');
-        btn.outerHTML = '<p class="fine">Someone is already talking to the seller about this one.</p>';
-        return null;
-      }
-
-      return Store.createRequest({
-        listingId: listing.id,
-        gameEntryId: entry.id,
-        buyerId: Store.uid(),
-        sellerId: listing.sellerId,
-        buyerName: me.displayName,
-        buyerPhoto: me.photoURL || null,
-        sellerName: listing.sellerName || '',
-        sellerPhoto: listing.sellerPhoto || null,
-        listingTitle: listing.title || '',
-        gameName: entry.name || (game && game.name) || 'Game',
-        coverPhoto: (entry.photos && entry.photos[0]) || (game && game.imageUrl) || null,
-        askingPrice: typeof entry.askingPrice === 'number' ? entry.askingPrice : null
-      }).then(function (id) {
-        /* Feeds the Hot score. Fire-and-forget — a lost counter increment must
-         * never block the request itself. */
-        if (Store.bumpRequestCount) Store.bumpRequestCount(listing.id);
+    Store.createRequest(listing.id, entry.id).then(function (res) {
+      if (res.existing) {
+        U.toast('You already have a thread for this one');
+      } else if (res.queuePosition > 0) {
+        U.toast("You're #" + (res.queuePosition + 1) + " in line — we'll tell you when it's your turn");
+      } else {
         U.toast('Request sent — say hello');
-        App.go('thread', { id: id });
-      });
+      }
+      App.go('thread', { id: res.requestId });
     }).catch(function (err) {
       console.error('[tabled] request failed', err);
-      /* The rules block a request against someone who has blocked you, and
-       * they can't tell you that directly — the error is a generic permission
-       * denial, so translate it into something a person can act on. */
-      U.toast(/permission/i.test(err && err.message || '')
-        ? "You can't request from this seller"
-        : 'Could not send that request', 'bad');
       btn.disabled = false;
-      btn.textContent = 'Request this game';
+      btn.textContent = original;
+
+      /* Callable errors arrive as 'functions/<code>' with a message already
+       * written for a person, so surface it rather than replacing it. The
+       * fallback only covers the case where there's nothing readable. */
+      var msg = (err && err.message) || '';
+      var isOurs = /permission-denied|failed-precondition|not-found/.test(err && err.code || '');
+      if (/internal|unavailable/i.test(err && err.code || '') && !Store.isDemo()) {
+        U.toast('Requests need the Cloud Functions deployed — see the README', 'bad');
+      } else {
+        U.toast(isOurs && msg ? msg : 'Could not send that request', 'bad');
+      }
     });
   }
 

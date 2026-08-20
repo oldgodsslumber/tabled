@@ -157,6 +157,24 @@
       ]
     },
     {
+      "//": "advanceExpiredHolds: lapsed holds and unanswered proposals (M5)",
+      "collectionGroup": "requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "holdExpiresAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "//": "advanceExpiredHolds: no-show sweep past the grace period (M5)",
+      "collectionGroup": "requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "scheduledTime", "order": "ASCENDING" }
+      ]
+    },
+    {
       "//": "onReportCreate counts open reports per target",
       "collectionGroup": "reports",
       "queryScope": "COLLECTION",

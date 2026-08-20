@@ -4,8 +4,9 @@ A mobile-first web app for buying, selling and trading used board games locally 
 the listing and discovery half of what Facebook Marketplace and Reddit do badly
 for this hobby. Built against `board_game_marketplace_spec.md`.
 
-**This build covers M1–M4.** See [Where this build stops](#where-this-build-stops)
-for exactly what's in and what isn't.
+**This build covers M1–M5**, plus a US-only geo-lock. See
+[Where this build stops](#where-this-build-stops) for exactly what's in and what
+isn't.
 
 No build step, no bundler, no npm for the web app itself. Classic scripts plus
 one ES module for the Firebase bootstrap, the same shape as the other apps in
@@ -74,12 +75,6 @@ Worth doing anyway: in **Google Cloud Console → APIs & Services → Credential
 restrict the browser key to HTTP referrers for your domains. It doesn't protect
 data (the rules do that) but it stops someone else's site burning your quota.
 
-Those values are public by design — a web client cannot hide them,
-and Firebase doesn't expect it to. Security lives in `firestore.rules`,
-`storage.rules` and Google Auth. **The keys that genuinely must stay secret
-(geocoding, later Stripe) live in Cloud Functions and never appear in this
-repo.**
-
 ### 2. Authentication
 
 **Authentication → Sign-in method → Google → Enable.** Set a support email.
@@ -107,19 +102,14 @@ pasting is how the two drift apart.
 firebase deploy --only firestore:rules,firestore:indexes
 ```
 
-```sh
-npm i -g firebase-tools     # already installed on this machine
-firebase login
-firebase use --add          # pick the project you just made
-firebase deploy --only firestore:rules,firestore:indexes
-```
-
 Index creation takes a few minutes. Queries fail with a clear error until they
 finish building.
 
-### 4. Storage
+### 4. Storage — needs Blaze
 
-**Storage → Get started.** Then:
+**Storage → Get started.** Note that Firebase now requires the **Blaze plan** to
+enable Cloud Storage on newly created projects, so this and the Functions step
+below unblock together. Then:
 
 ```sh
 firebase deploy --only storage
@@ -371,6 +361,55 @@ nothing can yet generate.
 
 ---
 
+## How the queue works (M5)
+
+**Requests can only be created by a Cloud Function.** `firestore.rules` denies
+client creates on `requests` outright. This is the one structural constraint the
+milestone imposes, and it isn't optional:
+
+- Queue position can't be computed by the client, because a client that writes
+  its own `queuePosition` can write `0`.
+- It can't be assigned by an `onCreate` trigger either — between the write and
+  the trigger the document exists with a position nobody validated, and two
+  simultaneous requests would both read "the queue is empty".
+- Only a transaction that reads the current queue and writes the new request
+  together is correct, and that has to be a function.
+
+A consequence worth knowing: every guard the old client-create rule applied —
+blocking, restriction, no self-requests, nothing arriving pre-scheduled — had to
+be **re-established inside the callable**, because the admin SDK bypasses rules
+entirely. Moving a check server-side means rewriting it there, not assuming it
+comes along.
+
+**Queue state is derived, never incremented.** `resyncQueue()` recalculates
+positions, entry status, holder and `queueCount` from the open request set every
+time it runs. An incremented counter drifts the first time a write is retried or
+lost, and a listing that says "3 waiting" with two people in the queue is worse
+than showing nothing. Being derived also makes the whole thing idempotent, which
+is why the expiry sweep can safely resync entries the trigger will resync again.
+
+**A promoted holder gets a fresh full window**, not the remainder of the one the
+previous holder burned through. They've only just been told it's their turn.
+
+**Three expiry cases, deliberately different:**
+
+| Case | What happens |
+|---|---|
+| Holder never landed on a time within 24h | Expires, queue moves up |
+| Seller never answered a proposal | Reverts to `onHold` with a **fresh** window — the buyer already acted, and a slow seller shouldn't cost them their place |
+| Scheduled time passed with no completion | Expires after a 12h grace cushion (the no-show case) |
+
+**A queued buyer can chat but cannot propose a time.** That's the holder's turn
+to take, enforced in the rules; the UI just doesn't offer a button that would be
+rejected.
+
+**`proposedTime` and `scheduledTime` are Timestamps, not epoch numbers.** This
+mattered exactly where predicted: `advanceExpiredHolds` runs range queries
+against `scheduledTime`, and Firestore sorts numbers and Timestamps as *separate
+type groups* — a mix produces silently wrong sweep results rather than an error.
+
+---
+
 ## Where this build stops
 
 **Working now (M1–M4):**
@@ -389,16 +428,14 @@ nothing can yet generate.
   breaker, per-user blocking
 - Per-game requests, real-time chat, propose → seller confirms/declines,
   dashboard split by role, unread badge, cancel/decline
+- Hold & queue: server-assigned positions, "you're #3 in line", automatic
+  promotion on cancel or expiry, 24h hold with a 12h no-show grace
 - Full demo mode with no Firebase at all — including chat, via a small pub/sub
   that stands in for `onSnapshot`, so the views exercise the same real-time code
   path they'll use against Firestore
 
 **Deliberately not built yet:**
 
-- **M5 — Hold & queue.** `gameEntries` already carries `status`,
-  `currentHoldRequestId`, `holdExpiresAt` and `queueCount`, seeded to defaults
-  and locked to functions in the rules, so M5 updates them in place rather than
-  migrating.
 - **M6 — Auto-book.** `bookedSlots` is ruled (client writes denied) but unused.
 - **M7 — Completion & reviews.** The thread's confirmed-time card says outright
   that marking a trade complete is a later milestone. `completed` is currently

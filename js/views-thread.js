@@ -213,10 +213,30 @@ window.ThreadView = (function () {
     var amSeller = req.sellerId === Store.uid();
     var html = '';
 
-    if (req.status === 'onHold' || req.status === 'queued') {
+    /* Someone waiting in line can read and chat, but cannot put a time on the
+     * table — that's the holder's turn to take. Enforced in firestore.rules;
+     * the UI just avoids offering a button that would be rejected. */
+    if (req.status === 'queued') {
+      html =
+        '<div class="sched queued">' +
+          '<p class="sched-state">' +
+            (amSeller
+              ? U.esc((req.buyerName || 'They') + ' is #' + (req.queuePosition + 1) +
+                ' in line for this one.')
+              : U.esc("You're #" + (req.queuePosition + 1) + ' in line.')) +
+          '</p>' +
+          '<p class="fine">' + (amSeller
+            ? 'You\'re currently arranging this with someone ahead of them.'
+            : 'You can still ask questions here. If the person ahead doesn\'t follow ' +
+              'through within ' + CFG.QUEUE.holdHours + ' hours, it passes to you automatically.') +
+          '</p>' +
+        '</div>';
+
+    } else if (req.status === 'onHold') {
       html =
         '<div class="sched">' +
-          '<p class="sched-state">No time agreed yet.</p>' +
+          '<p class="sched-state">No time agreed yet.' +
+            holdCountdown(req, amSeller) + '</p>' +
           '<button class="btn small" data-act="propose">Propose a time</button>' +
         '</div>';
 
@@ -274,6 +294,29 @@ window.ThreadView = (function () {
       else if (act === 'decline') respond(req, false);
       else if (act === 'cancel') cancel(req, amSeller);
     });
+  }
+
+  /* The hold clock, stated as remaining time rather than a deadline timestamp —
+   * "about 6 hours left" is actionable where "expires 2026-08-21T09:14Z" needs
+   * mental arithmetic. Only shown when it's actually close enough to matter. */
+  function holdCountdown(req, amSeller) {
+    var d = U.toDate(req.holdExpiresAt);
+    if (!d) return '';
+    var hoursLeft = (d.getTime() - Date.now()) / 3600000;
+    if (hoursLeft <= 0) {
+      return ' <span class="hold-warn">Hold has lapsed — it may pass to the next in line.</span>';
+    }
+    if (hoursLeft > CFG.QUEUE.holdHours) return '';
+
+    var left = hoursLeft < 1
+      ? Math.max(1, Math.round(hoursLeft * 60)) + ' min'
+      : Math.round(hoursLeft) + 'h';
+
+    if (amSeller) {
+      return ' <span class="fine">(their hold has ' + U.esc(left) + ' left)</span>';
+    }
+    return ' <span class="' + (hoursLeft < 4 ? 'hold-warn' : 'fine') + '">' +
+      U.esc(left) + ' left to lock in a time.</span>';
   }
 
   function whenLabel(v) {
@@ -334,9 +377,13 @@ window.ThreadView = (function () {
       }
       m.close();
 
+      /* A Date, not epoch milliseconds. Firestore stores a Date as a Timestamp,
+       * and advanceExpiredHolds runs range queries against this field —
+       * Firestore sorts numbers and Timestamps as separate type groups, so a
+       * mix produces silently wrong sweep results rather than an error. */
       Store.updateRequest(req.id, {
         status: 'proposedTime',
-        proposedTime: when.getTime(),
+        proposedTime: when,
         proposedBy: Store.uid(),
         method: method
       }).then(function () {
@@ -362,8 +409,12 @@ window.ThreadView = (function () {
   }
 
   function respond(req, confirmed) {
+    /* Normalized through toDate so the value written is always a Date — the
+     * proposal may have come back from Firestore as a Timestamp or from the
+     * demo store as an ISO string, and scheduledTime has to stay one type for
+     * the no-show sweep's range query to work. */
     var patch = confirmed
-      ? { status: 'scheduled', scheduledTime: req.proposedTime }
+      ? { status: 'scheduled', scheduledTime: U.toDate(req.proposedTime) }
       /* Declining returns the buyer to holder state rather than ending the
        * request — they proposed in good faith and shouldn't lose their place
        * over a time that didn't suit. */
