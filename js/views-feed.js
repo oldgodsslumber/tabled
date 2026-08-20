@@ -108,6 +108,7 @@ window.Feed = (function () {
       category: p.category || '',
       condition: p.condition || '',
       fulfillment: p.fulfillment || '',
+      payment: p.payment || '',
       tags: p.tags ? String(p.tags).split(',').filter(Boolean) : [],
       sellerId: p.sellerId || '',
       eventId: p.eventId || '',
@@ -125,7 +126,8 @@ window.Feed = (function () {
 
   function activeCount(p) {
     var n = 0;
-    ['category', 'condition', 'fulfillment', 'radius'].forEach(function (k) { if (p[k]) n++; });
+    ['category', 'condition', 'fulfillment', 'radius', 'payment']
+      .forEach(function (k) { if (p[k]) n++; });
     if (p.tags) n += String(p.tags).split(',').filter(Boolean).length;
     return n;
   }
@@ -231,6 +233,10 @@ window.Feed = (function () {
       var ful = CFG.FULFILLMENT.filter(function (f) { return f.key === p.fulfillment; })[0];
       chips.push({ k: 'fulfillment', t: ful ? ful.label : p.fulfillment });
     }
+    if (p.payment) {
+      var pm = CFG.PAYMENT.filter(function (x) { return x.key === p.payment; })[0];
+      chips.push({ k: 'payment', t: 'Accepts ' + (pm ? pm.label.toLowerCase() : p.payment) });
+    }
     (p.tags ? String(p.tags).split(',').filter(Boolean) : []).forEach(function (t) {
       chips.push({ k: 'tag:' + t, t: t });
     });
@@ -266,7 +272,7 @@ window.Feed = (function () {
       var k = t.dataset.drop;
       var next = Object.assign({}, state);
       if (k === '*') {
-        ['radius', 'category', 'condition', 'fulfillment', 'tags', 'eventId']
+        ['radius', 'category', 'condition', 'fulfillment', 'tags', 'eventId', 'payment']
           .forEach(function (f) { delete next[f]; });
       } else if (k.indexOf('tag:') === 0) {
         var drop = k.slice(4);
@@ -400,6 +406,17 @@ window.Feed = (function () {
       '</div>' +
 
       '<div class="filter-group">' +
+        '<h4>Payment accepted</h4>' +
+        '<div class="chip-row">' +
+          '<button class="chip' + (!p.payment ? ' on' : '') + '" data-f="payment" data-v="">Any</button>' +
+          CFG.PAYMENT.map(function (pm) {
+            return '<button class="chip' + (p.payment === pm.key ? ' on' : '') +
+              '" data-f="payment" data-v="' + U.attr(pm.key) + '">' + U.esc(pm.label) + '</button>';
+          }).join('') +
+        '</div>' +
+      '</div>' +
+
+      '<div class="filter-group">' +
         '<h4>Tags <span class="fine">(all selected must match)</span></h4>' +
         '<div class="chip-row">' +
           CFG.TAGS.map(function (t) {
@@ -441,7 +458,8 @@ window.Feed = (function () {
       if (t.dataset.act === 'reset') {
         m.close();
         var cleared = Object.assign({}, state);
-        ['radius', 'category', 'condition', 'fulfillment', 'tags'].forEach(function (k) { delete cleared[k]; });
+        ['radius', 'category', 'condition', 'fulfillment', 'tags', 'payment']
+          .forEach(function (k) { delete cleared[k]; });
         App.go('feed', cleared);
         return;
       }

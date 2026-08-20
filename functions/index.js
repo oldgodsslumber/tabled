@@ -558,6 +558,36 @@ exports.createRequest = onCall(async (req) => {
     throw new HttpsError('invalid-argument', 'listingId and gameEntryId are required');
   }
 
+  /* ---- M10: trade proposals ---------------------------------------------
+   * A trade proposal is structurally a request with a different payment shape
+   * attached — same queue, same chat, same proposedTime gate, same mutual
+   * completion. That reuse is the whole design; there is no parallel system.
+   *
+   * The addendum assumed a client write plus a follow-up trigger to reserve
+   * the offered item. M5 moved request creation into this callable, so the
+   * reservation happens inside the SAME transaction instead — atomic rather
+   * than eventually consistent, which matters because the thing being
+   * reserved is a single physical object. */
+  const proposalType = d.proposalType === 'trade' ? 'trade' : 'purchase';
+  const offeredListingId = d.offeredListingId ? String(d.offeredListingId) : null;
+  const offeredGameEntryId = d.offeredGameEntryId ? String(d.offeredGameEntryId) : null;
+  const offeredItem = d.offeredItemDescription || null;
+
+  /* Informational only, never validated or processed. "My Catan + $10" is a
+   * thing people say to each other; the number is displayed to the seller and
+   * settled in chat like everything else. */
+  const cashOffered = Number.isFinite(Number(d.additionalCashOffered))
+    ? Math.max(0, Math.round(Number(d.additionalCashOffered) * 100) / 100)
+    : null;
+
+  if (proposalType === 'trade' && !offeredGameEntryId && !offeredItem) {
+    throw new HttpsError('invalid-argument',
+      'A trade proposal has to offer something — a listing of yours, or a described item');
+  }
+  if (offeredGameEntryId && !offeredListingId) {
+    throw new HttpsError('invalid-argument', 'offeredListingId is required with offeredGameEntryId');
+  }
+
   const listingRef = db.collection('listings').doc(listingId);
   const entryRef = listingRef.collection('gameEntries').doc(gameEntryId);
   const nowMs = Date.now();
@@ -594,6 +624,46 @@ exports.createRequest = onCall(async (req) => {
     if (meSnap.exists && meSnap.data().restricted === true) {
       throw new HttpsError('permission-denied',
         'Your account is restricted while reports against it are reviewed');
+    }
+
+    /* Trades only where the seller said they're open to them. `acceptedPayment`
+     * is otherwise purely descriptive — this is the single place any of it has
+     * a functional effect. */
+    if (proposalType === 'trade' &&
+        !(listing.acceptedPayment && listing.acceptedPayment.trades === true)) {
+      throw new HttpsError('failed-precondition', "This seller isn't taking trades");
+    }
+
+    /* Read and validate the offered item BEFORE any write, both because
+     * transactions require it and because a proposal that fails validation
+     * must not leave someone's game reserved. */
+    let offeredRef = null;
+    let offeredEntry = null;
+    if (offeredGameEntryId) {
+      const offeredListingRef = db.collection('listings').doc(offeredListingId);
+      const offeredListingSnap = await tx.get(offeredListingRef);
+      if (!offeredListingSnap.exists) {
+        throw new HttpsError('not-found', "Can't find the listing you're offering from");
+      }
+      if (offeredListingSnap.data().sellerId !== uid) {
+        throw new HttpsError('permission-denied', "You can only offer your own listings");
+      }
+      offeredRef = offeredListingRef.collection('gameEntries').doc(offeredGameEntryId);
+      const offeredSnap = await tx.get(offeredRef);
+      if (!offeredSnap.exists) throw new HttpsError('not-found', "Can't find the game you're offering");
+      offeredEntry = offeredSnap.data();
+
+      if (offeredEntry.status === 'sold') {
+        throw new HttpsError('failed-precondition', "You've already sold that one");
+      }
+      if (offeredEntry.status === 'reserved') {
+        throw new HttpsError('failed-precondition',
+          "That game is already on the table in another trade");
+      }
+      if (offeredEntry.status === 'onHold') {
+        throw new HttpsError('failed-precondition',
+          "Someone is already in a queue for that game — you can't offer it in a trade too");
+      }
     }
 
     const openSnap = await tx.get(
@@ -643,6 +713,15 @@ exports.createRequest = onCall(async (req) => {
       eventId: listing.eventId || null,
       eventEndDate: listing.eventEndDate || null,
 
+      proposalType,
+      offeredListingId,
+      offeredGameEntryId,
+      /* Denormalized so the thread can show the offer without reading a
+       * listing that may later be edited or deleted out from under it. */
+      offeredGameName: offeredEntry ? (offeredEntry.name || 'Game') : null,
+      offeredItemDescription: offeredItem,
+      additionalCashOffered: cashOffered,
+
       proposedTime: null,
       proposedBy: null,
       scheduledTime: null,
@@ -664,6 +743,22 @@ exports.createRequest = onCall(async (req) => {
       holdExpiresAt: position === 0 ? holdDeadlineFor(listing, nowMs) : (entry.holdExpiresAt || null),
       queueCount: position + 1
     });
+
+    /* Reserved the moment the proposal is submitted, not once it reaches the
+     * front of the queue. It is a single physical object: letting it sit fully
+     * `active` while it is also on the table in an unrelated trade is how the
+     * same game gets committed twice.
+     *
+     * The cost is real and worth stating in the UI — your game is off the
+     * market while a speculative offer sits in someone else's queue. It
+     * releases automatically if the proposal is declined, cancelled or
+     * expires. */
+    if (offeredRef) {
+      tx.update(offeredRef, {
+        status: 'reserved',
+        reservedByRequestId: newRef.id
+      });
+    }
 
     tx.update(listingRef, {
       requestCount: admin.firestore.FieldValue.increment(1)
@@ -694,6 +789,20 @@ exports.onRequestStatusChange = onDocumentUpdated('requests/{requestId}', async 
   await db.runTransaction(async (tx) => {
     await resyncQueue(tx, after.listingId, after.gameEntryId, nowMs);
   });
+
+  /* A trade proposal that closed without completing must hand the offered game
+   * back. Completion is excluded because confirmSold marks it `sold` instead —
+   * releasing it to `active` there would put a traded-away game back on the
+   * market. */
+  if (wasOpen && !isOpen && after.offeredGameEntryId && after.status !== 'completed') {
+    const offeredRef = db.collection('listings').doc(after.offeredListingId)
+      .collection('gameEntries').doc(after.offeredGameEntryId);
+    await offeredRef.update({
+      status: 'active',
+      reservedByRequestId: null
+    }).catch((e) => console.warn('could not release reserved entry', e));
+    console.log(`released reserved entry ${after.offeredGameEntryId} (${after.status})`);
+  }
 
   if (wasOpen && !isOpen) {
     console.log(`request ${event.params.requestId} left the queue (${after.status}) ` +
@@ -1077,6 +1186,21 @@ exports.confirmSold = onCall(async (req) => {
       queueCount: 0
     });
 
+    /* M10: a completed trade moves TWO games. The offered side is sold too —
+     * it changed hands just as much as the requested one did. */
+    if (r.offeredGameEntryId && r.offeredListingId) {
+      tx.update(
+        db.collection('listings').doc(r.offeredListingId)
+          .collection('gameEntries').doc(r.offeredGameEntryId),
+        {
+          status: 'sold',
+          reservedByRequestId: null,
+          currentHoldRequestId: null,
+          holdExpiresAt: null,
+          queueCount: 0
+        });
+    }
+
     /* Anyone still queued behind this trade is waiting for something that no
      * longer exists. Closing them explicitly is kinder than leaving them to
      * find out when their hold silently lapses. */
@@ -1106,7 +1230,8 @@ exports.confirmSold = onCall(async (req) => {
 
     return {
       already: false, completed: true, closedOthers: closed,
-      listingId: r.listingId, sellerId: r.sellerId
+      listingId: r.listingId, sellerId: r.sellerId,
+      offeredListingId: r.offeredListingId || null
     };
   });
 
@@ -1117,6 +1242,8 @@ exports.confirmSold = onCall(async (req) => {
    * sold for a moment. */
   if (outcome.completed && outcome.listingId) {
     await archiveIfAllSold(outcome.listingId);
+    /* Both listings can be emptied by one trade. */
+    if (outcome.offeredListingId) await archiveIfAllSold(outcome.offeredListingId);
     await recomputeVerified(outcome.sellerId);
   }
 

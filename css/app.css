@@ -983,6 +983,28 @@ select {
 }
 .event-link .chev { font-size: 1.2rem; }
 
+/* ---- Trade proposals (M10) ----------------------------------------------- */
+
+.pay-row { align-items: center; }
+.pay-row .fine { margin: 0; }
+
+.trade-pane { margin: .75rem 0; }
+.event-row.picked { border-color: var(--navy); background: var(--navy-050); }
+
+.trade-offer {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .55rem .9rem;
+  background: var(--amber-dim);
+  border-bottom: 1px solid #f0dfae;
+}
+.trade-offer .grow { display: flex; flex-direction: column; min-width: 0; }
+.trade-offer .fine { margin: 0; }
+
+.entry-cta { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.entry-cta .fine { flex-basis: 100%; margin: .2rem 0 0; }
+
 /* ---- Overflow menu ------------------------------------------------------- */
 
 .overflow { position: relative; flex: none; }

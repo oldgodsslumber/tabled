@@ -4,7 +4,8 @@ A mobile-first web app for buying, selling and trading used board games locally 
 the listing and discovery half of what Facebook Marketplace and Reddit do badly
 for this hobby. Built against `board_game_marketplace_spec.md`.
 
-**This build covers M1–M9**, plus a US-only geo-lock. See
+**This build covers M1–M10** — every milestone in both spec documents — plus a
+US-only geo-lock. See
 [Where this build stops](#where-this-build-stops) for exactly what's in and what
 isn't.
 
@@ -646,6 +647,59 @@ out-of-window times since M6.
 
 ---
 
+## Trade proposals (M10)
+
+**A trade proposal is a request with a different payment shape attached.** Same
+queue, same chat, same propose/confirm gate, same mutual completion. There is no
+parallel system — that reuse is the entire reason this was cheap to add, and it
+is the design decision to preserve if this ever grows.
+
+**One deviation from the addendum.** It assumed a client write plus a follow-up
+Firestore trigger to reserve the offered item. M5 had already moved request
+creation into a callable, so the reservation happens **inside the same
+transaction** instead — atomic rather than eventually consistent, which matters
+when the thing being reserved is a single physical object.
+
+### `acceptedPayment` is descriptive, with exactly one exception
+
+Cash / PayPal / Venmo / Trades are metadata. None are processed by the app — the
+same boundary as the game sale itself. **Trades** is the only one that does
+anything: it decides whether the "Propose a trade" button appears. That single
+functional effect is enforced server-side, not just hidden in the UI.
+
+### The offered game is reserved on submission
+
+Not when the proposal reaches the front of the queue. It's a single physical
+object: letting it sit `active` while it's also on the table in an unrelated
+trade is how the same game gets promised twice.
+
+The cost is real and the UI says so — your game is off the market while a
+speculative offer sits in someone else's queue. It releases automatically on
+decline, cancel or expiry, via the same trigger that advances the queue.
+Completion is deliberately excluded from that release: `confirmSold` marks it
+**sold**, and releasing it to `active` there would put a traded-away game back
+on the market.
+
+A game that is already `reserved`, `onHold` or `sold` can't be offered — each
+with its own message, because "that's in a queue" and "you already sold that"
+need different responses from the person reading them.
+
+### Completion moves two games
+
+`confirmSold` marks **both** entries sold, archives **both** listings if either
+is now empty, and counts the trade for both people. `tradeCount` already
+incremented both sides at M7, since a trade is symmetric — that needed no
+change.
+
+### Unlisted offers
+
+"Describe something I have" exists because most people's shelves aren't listed.
+Nothing is reserved (there's no document to reserve), and per the addendum's open
+question, nothing is recorded against the offerer's history unless the trade
+actually completes.
+
+---
+
 ## Where this build stops
 
 **Working now (M1–M4):**
@@ -675,6 +729,9 @@ out-of-window times since M6.
   moot until the cutoff
 - Events: open creation, "in person at an event" as a third fulfillment
   option, event-scoped feed, and three-phase hold timing around the con
+- Trade proposals: offer one of your own listings or describe an item, with
+  the offered game reserved on submission; accepted-payment metadata and an
+  "accepts trades" filter
 - Full demo mode with no Firebase at all — including chat, via a small pub/sub
   that stands in for `onSnapshot`, so the views exercise the same real-time code
   path they'll use against Firestore

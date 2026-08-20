@@ -184,6 +184,7 @@ window.ThreadView = (function () {
         '</a>' +
         Safety.menuHtml('user', other.id, other.displayName, other.id) +
       '</div>' +
+      tradeOfferHtml(req) +
       '<a class="thread-item" href="#/listing/' + U.attr(req.listingId) + '">' +
         (U.safeUrl(req.coverPhoto)
           ? '<span class="ti-photo" style="background-image:url(' +
@@ -200,6 +201,32 @@ window.ThreadView = (function () {
       sellerName: other.displayName,
       onBlock: function () { App.go('dashboard', {}); }
     });
+  }
+
+  /* What's on the table, when this is a trade rather than a purchase. Shown in
+   * the header rather than buried in chat, because it is the whole substance of
+   * the conversation. */
+  function tradeOfferHtml(req) {
+    if (req.proposalType !== 'trade') return '';
+    var what = req.offeredGameName ||
+      (req.offeredItemDescription && req.offeredItemDescription.name) || 'a game';
+    var desc = req.offeredItemDescription;
+    var cash = typeof req.additionalCashOffered === 'number' && req.additionalCashOffered > 0
+      ? ' + ' + U.money(req.additionalCashOffered) : '';
+
+    return '<div class="trade-offer">' +
+      '<span class="badge deal">Trade</span>' +
+      '<div class="grow">' +
+        '<strong>' + U.esc(what) + U.esc(cash) + '</strong>' +
+        '<span class="fine">' +
+          (desc
+            ? U.esc(CFG.condition(desc.condition).label) +
+              (desc.notes ? ' \u00b7 ' + U.esc(desc.notes) : '') +
+              ' \u00b7 not a listing, described by them'
+            : 'from their listings') +
+        '</span>' +
+      '</div>' +
+    '</div>';
   }
 
   /* ---- Scheduling -------------------------------------------------------- */

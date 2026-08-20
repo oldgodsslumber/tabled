@@ -80,6 +80,8 @@ window.ListingView = (function () {
           return '<span class="badge">' + U.esc(f) + '</span>';
         }).join('') + '</div>' : '') +
 
+        (paymentRow(l)) +
+
         (l.eventId
           ? '<a class="event-link" href="#/feed?eventId=' + U.attr(l.eventId) + '">' +
               '<span class="grow">Selling at <strong>' +
@@ -90,7 +92,7 @@ window.ListingView = (function () {
 
         '<div class="entries">' +
           entries.map(function (e) {
-            return entryHtml(e, games[String(e.bggId)], mine);
+            return entryHtml(e, games[String(e.bggId)], mine, l);
           }).join('') +
         '</div>' +
 
@@ -119,6 +121,11 @@ window.ListingView = (function () {
       if (entry) startRequest(t, l, entry);
     });
 
+    U.on(root, '[data-trade]', function (e, t) {
+      var entry = entries.filter(function (x) { return x.id === t.dataset.trade; })[0];
+      if (entry) tradeDialog(l, entry);
+    });
+
     var del = U.$('#del', root);
     if (del) del.addEventListener('click', function () {
       /* Hard delete is correct here — an unsold listing has nothing worth
@@ -139,6 +146,26 @@ window.ListingView = (function () {
     });
   }
 
+  /* What this seller will take. Purely informational except for Trades, which
+   * is what gates the proposal button below. */
+  function paymentRow(l) {
+    var accepted = CFG.PAYMENT.filter(function (pm) {
+      return l.acceptedPayment && l.acceptedPayment[pm.key];
+    });
+    if (!accepted.length) return '';
+    return '<div class="ful-row pay-row">' +
+      '<span class="fine">Takes:</span>' +
+      accepted.map(function (pm) {
+        return '<span class="badge' + (pm.key === 'trades' ? ' deal' : '') + '">' +
+          U.esc(pm.label) + '</span>';
+      }).join('') +
+    '</div>';
+  }
+
+  function takesTrades(l) {
+    return !!(l.acceptedPayment && l.acceptedPayment.trades);
+  }
+
   /* One request button per game, because a request is against a specific game
    * entry — not the bundle. Someone wanting only the Wingspan out of a
    * three-game listing shouldn't have to ask for all three.
@@ -146,7 +173,7 @@ window.ListingView = (function () {
    * M5: a claimed game no longer turns people away. They join the queue, and
    * the wait is stated plainly up front — "you'd be 3rd" is information someone
    * can act on, where a disabled button is just a dead end. */
-  function requestBlock(e, mine) {
+  function requestBlock(e, mine, tradesOn) {
     if (mine) {
       return e.queueCount
         ? '<p class="fine">' + U.esc(U.plural(e.queueCount, 'person', 'people')) +
@@ -163,11 +190,16 @@ window.ListingView = (function () {
     }
 
     var waiting = e.queueCount || 0;
+    var tradeBtn = tradesOn
+      ? '<button class="btn ghost small" data-trade="' + U.attr(e.id) + '">Propose a trade</button>'
+      : '';
+
     if (!waiting) {
-      return '<button class="btn small" data-request="' + U.attr(e.id) + '">Request this game</button>';
+      return '<button class="btn small" data-request="' + U.attr(e.id) + '">Request this game</button>' +
+        tradeBtn;
     }
     return '<button class="btn ghost small" data-request="' + U.attr(e.id) + '">' +
-        'Join the queue</button>' +
+        'Join the queue</button>' + tradeBtn +
       '<p class="fine">' + U.esc(U.plural(waiting, 'person', 'people')) + ' ahead of you. ' +
         'If they don\'t follow through within ' + CFG.QUEUE.holdHours + ' hours, it passes to the next in line.</p>';
   }
@@ -182,7 +214,7 @@ window.ListingView = (function () {
     return 'You\'re #' + (r.queuePosition + 1) + ' in line.';
   }
 
-  function entryHtml(e, game, mine) {
+  function entryHtml(e, game, mine, listingRef) {
     var cond = CFG.condition(e.condition);
     var name = e.name || (game && game.name) || 'Untitled game';
     var year = game && game.yearPublished ? ' <span class="year">(' + game.yearPublished + ')</span>' : '';
@@ -233,7 +265,7 @@ window.ListingView = (function () {
         ? '<p class="fine">' + U.esc(game.categories.slice(0, 6).join(' · ')) + '</p>'
         : '') +
 
-      '<div class="entry-cta">' + requestBlock(e, mine) + '</div>' +
+      '<div class="entry-cta">' + requestBlock(e, mine, takesTrades(listingRef)) + '</div>' +
     '</article>';
   }
 
@@ -280,6 +312,143 @@ window.ListingView = (function () {
       } else {
         U.toast(isOurs && msg ? msg : 'Could not send that request', 'bad');
       }
+    });
+  }
+
+  /* ---- Trade proposals (M10) ----------------------------------------------
+   * A trade proposal is a request with a different payment shape attached. It
+   * goes through the identical queue, chat, propose/confirm and mutual
+   * completion pipeline — there is no parallel system, which is the entire
+   * reason this was cheap to add.
+   *
+   * Two ways to offer: one of your own active listings, or an item you simply
+   * describe. The second exists because most people's shelves aren't listed. */
+  function tradeDialog(listing, entry) {
+    if (!Store.uid()) { U.toast('Sign in to propose a trade', 'warn'); return; }
+
+    var m = U.modal('Propose a trade', U.spinner('Loading your games'));
+    var mode = 'mine';
+    var pickedListingId = null, pickedEntryId = null;
+
+    Store.myOfferableEntries().then(function (offerable) {
+      m.el.innerHTML =
+        '<p class="modal-msg">Offering for <strong>' + U.esc(entry.name || 'this game') +
+          '</strong>' + (typeof entry.askingPrice === 'number'
+            ? ' (asking ' + U.esc(U.money(entry.askingPrice)) + ')' : '') + '.</p>' +
+
+        '<div class="chip-row">' +
+          '<button class="chip on" data-mode="mine">One of my listings</button>' +
+          '<button class="chip" data-mode="describe">Something I have</button>' +
+        '</div>' +
+
+        '<div id="trade-mine" class="trade-pane">' +
+          (offerable.length
+            ? '<div class="event-list">' + offerable.map(function (o) {
+                return '<button class="event-row" data-offer="' + U.attr(o.entry.id) + '" ' +
+                  'data-offer-listing="' + U.attr(o.listingId) + '">' +
+                  '<div class="grow">' +
+                    '<strong>' + U.esc(o.entry.name || 'Game') + '</strong>' +
+                    '<span class="fine">' +
+                      U.esc(CFG.condition(o.entry.condition).label) +
+                      (typeof o.entry.askingPrice === 'number'
+                        ? ' \u00b7 listed at ' + U.esc(U.money(o.entry.askingPrice)) : '') +
+                    '</span>' +
+                  '</div>' +
+                '</button>';
+              }).join('') + '</div>'
+            : '<p class="fine">You have no listed games free to offer. Either list one, ' +
+              'or describe something instead.</p>') +
+        '</div>' +
+
+        '<div id="trade-describe" class="trade-pane" hidden>' +
+          '<label class="field"><span>What are you offering?</span>' +
+            '<input id="tr-name" type="text" maxlength="120" placeholder="Wingspan"></label>' +
+          '<label class="field"><span>Condition</span>' +
+            '<select id="tr-cond">' +
+              CFG.CONDITIONS.map(function (c) {
+                return '<option value="' + U.attr(c.key) + '"' + (c.key === 'VG' ? ' selected' : '') +
+                  '>' + U.esc(c.key) + ' \u2014 ' + U.esc(c.label) + '</option>';
+              }).join('') +
+            '</select></label>' +
+          '<label class="field"><span>Anything worth adding? <em>optional</em></span>' +
+            '<textarea id="tr-notes" rows="2" maxlength="300" ' +
+              'placeholder="Sleeved, all expansions, box a bit tatty"></textarea></label>' +
+        '</div>' +
+
+        '<label class="field">' +
+          '<span>Add cash on top? <em>optional</em></span>' +
+          '<input id="tr-cash" type="number" min="0" step="1" inputmode="decimal" placeholder="0">' +
+          '<span class="fine">Just a note to the seller \u2014 Tabled never handles it, and the ' +
+            'number isn\'t binding. You\'ll settle the details in chat.</span>' +
+        '</label>' +
+
+        '<p class="fine">Your offered game is reserved as soon as you send this, so it ' +
+          'can\'t end up promised twice. It frees up again if the trade is declined, ' +
+          'cancelled or expires.</p>' +
+
+        '<div class="modal-actions">' +
+          '<button class="btn ghost" data-act="cancel">Cancel</button>' +
+          '<button class="btn" data-act="send">Send proposal</button>' +
+        '</div>';
+
+      U.on(m.el, '[data-mode]', function (e, t) {
+        mode = t.dataset.mode;
+        U.$$('[data-mode]', m.el).forEach(function (b) {
+          b.classList.toggle('on', b.dataset.mode === mode);
+        });
+        U.$('#trade-mine', m.el).hidden = mode !== 'mine';
+        U.$('#trade-describe', m.el).hidden = mode !== 'describe';
+      });
+
+      U.on(m.el, '[data-offer]', function (e, t) {
+        pickedEntryId = t.dataset.offer;
+        pickedListingId = t.dataset.offerListing;
+        U.$$('[data-offer]', m.el).forEach(function (b) {
+          b.classList.toggle('picked', b === t);
+        });
+      });
+
+      U.on(m.el, '[data-act]', function (e, t) {
+        if (t.dataset.act === 'cancel') { m.close(); return; }
+
+        var payload = { proposalType: 'trade' };
+        if (mode === 'mine') {
+          if (!pickedEntryId) { U.toast('Pick which of your games you\'re offering', 'warn'); return; }
+          payload.offeredListingId = pickedListingId;
+          payload.offeredGameEntryId = pickedEntryId;
+        } else {
+          var name = U.$('#tr-name', m.el).value.trim();
+          if (!name) { U.toast('Name the game you\'re offering', 'warn'); return; }
+          payload.offeredItemDescription = {
+            name: name,
+            condition: U.$('#tr-cond', m.el).value,
+            notes: U.$('#tr-notes', m.el).value.trim(),
+            bggId: null,
+            tags: [],
+            photos: []
+          };
+        }
+        var cash = parseFloat(U.$('#tr-cash', m.el).value);
+        if (!isNaN(cash) && cash > 0) payload.additionalCashOffered = cash;
+
+        t.disabled = true;
+        t.textContent = 'Sending\u2026';
+        Store.createRequest(listing.id, entry.id, payload).then(function (res) {
+          m.close();
+          U.toast(res.queuePosition > 0
+            ? 'Proposal sent \u2014 you\'re #' + (res.queuePosition + 1) + ' in line'
+            : 'Trade proposed \u2014 talk it through with them');
+          App.go('thread', { id: res.requestId });
+        }).catch(function (err) {
+          console.error('[tabled] trade proposal failed', err);
+          U.toast((err && err.message) || 'Could not send that proposal', 'bad');
+          t.disabled = false;
+          t.textContent = 'Send proposal';
+        });
+      });
+    }).catch(function (err) {
+      console.error('[tabled] offerable load failed', err);
+      m.el.innerHTML = U.empty('Could not load your games', '');
     });
   }
 

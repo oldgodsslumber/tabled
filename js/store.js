@@ -150,6 +150,7 @@ window.Store = (function () {
         }
 
         if (f.fulfillment && !(l.fulfillment && l.fulfillment[f.fulfillment])) return false;
+        if (f.payment && !(l.acceptedPayment && l.acceptedPayment[f.payment])) return false;
 
         if (f.near) {
           if (!l.geoPoint) return false;
@@ -342,6 +343,9 @@ window.Store = (function () {
           geohash: listing.geohash || null,
           countryCode: listing.countryCode || null,
           state: listing.state || null,
+          acceptedPayment: listing.acceptedPayment || {
+            cash: true, paypal: false, venmo: false, trades: false
+          },
           eventId: listing.eventId || null,
           eventName: listing.eventName || null,
           /* Copied from the event at listing time rather than referenced, so
@@ -562,11 +566,11 @@ window.Store = (function () {
        * inside a transaction. The client sends only what it's asking for —
        * every denormalized field on the request is filled in server-side from
        * documents the client can't forge. */
-      createRequest: function (listingId, gameEntryId) {
-        return callable('createRequest', {
+      createRequest: function (listingId, gameEntryId, trade) {
+        return callable('createRequest', Object.assign({
           listingId: listingId,
           gameEntryId: gameEntryId
-        });
+        }, trade || {}));
       },
 
       getRequest: function (id) {
@@ -1030,8 +1034,8 @@ window.Store = (function () {
         };
         ['sellerId', 'sellerName', 'sellerPhoto', 'title', 'fulfillment',
           'locationLabel', 'geoPoint', 'geohash', 'countryCode', 'state',
-          'eventId', 'eventName', 'eventStartDate', 'eventEndDate',
-          'status'].forEach(function (k) {
+          'acceptedPayment', 'eventId', 'eventName', 'eventStartDate',
+          'eventEndDate', 'status'].forEach(function (k) {
           if (listing[k] !== undefined) l[k] = listing[k];
         });
         l.status = l.status || 'active';
@@ -1134,13 +1138,38 @@ window.Store = (function () {
        * faithful to it — including refusing a self-request and returning an
        * existing thread instead of a duplicate — so demo mode exercises the
        * real behaviour rather than a simplified stand-in that hides bugs. */
-      createRequest: function (listingId, gameEntryId) {
+      createRequest: function (listingId, gameEntryId, trade) {
+        trade = trade || {};
         var listing = db.listings.filter(function (l) { return l.id === listingId; })[0];
         if (!listing) return Promise.reject(new Error('No such listing'));
         var entry = (db.entries[listingId] || []).filter(function (e) { return e.id === gameEntryId; })[0];
         if (!entry) return Promise.reject(new Error('No such game'));
         if (listing.sellerId === myUid) return Promise.reject(new Error("You can't request your own listing"));
         if (entry.status === 'sold') return Promise.reject(new Error('That game is already sold'));
+
+        /* Mirrors the callable: trades only where the seller opted in, and the
+         * offered game must be genuinely free to offer. */
+        if (trade.proposalType === 'trade' &&
+            !(listing.acceptedPayment && listing.acceptedPayment.trades === true)) {
+          return Promise.reject(new Error("This seller isn't taking trades"));
+        }
+        var offeredEntry = null;
+        if (trade.offeredGameEntryId) {
+          var ol = db.listings.filter(function (l) { return l.id === trade.offeredListingId; })[0];
+          if (!ol) return Promise.reject(new Error("Can't find the listing you're offering from"));
+          if (ol.sellerId !== myUid) return Promise.reject(new Error('You can only offer your own listings'));
+          offeredEntry = (db.entries[trade.offeredListingId] || []).filter(function (e) {
+            return e.id === trade.offeredGameEntryId;
+          })[0];
+          if (!offeredEntry) return Promise.reject(new Error("Can't find the game you're offering"));
+          if (offeredEntry.status === 'sold') return Promise.reject(new Error("You've already sold that one"));
+          if (offeredEntry.status === 'reserved') {
+            return Promise.reject(new Error('That game is already on the table in another trade'));
+          }
+          if (offeredEntry.status === 'onHold') {
+            return Promise.reject(new Error("Someone is already in a queue for that game — you can't offer it in a trade too"));
+          }
+        }
 
         var open = db.requests.filter(function (r) {
           return r.gameEntryId === gameEntryId && CFG.isOpenRequest(r.status);
@@ -1168,6 +1197,15 @@ window.Store = (function () {
           queuePosition: position,
           holdExpiresAt: position === 0 ? deadline : null,
           promotedAt: position === 0 ? now : null,
+          proposalType: trade.proposalType === 'trade' ? 'trade' : 'purchase',
+          offeredListingId: trade.offeredListingId || null,
+          offeredGameEntryId: trade.offeredGameEntryId || null,
+          offeredGameName: offeredEntry ? (offeredEntry.name || 'Game') : null,
+          offeredItemDescription: trade.offeredItemDescription || null,
+          additionalCashOffered: typeof trade.additionalCashOffered === 'number'
+            ? trade.additionalCashOffered : null,
+          eventId: listing.eventId || null,
+          eventEndDate: listing.eventEndDate || null,
           proposedTime: null, proposedBy: null, scheduledTime: null,
           method: null, bookedSlotId: null, feePaid: false,
           lastMessageAt: null, lastMessageText: '', lastMessageSenderId: null,
@@ -1182,6 +1220,10 @@ window.Store = (function () {
           entry.holdExpiresAt = deadline;
         }
         entry.queueCount = position + 1;
+        if (offeredEntry) {
+          offeredEntry.status = 'reserved';
+          offeredEntry.reservedByRequestId = id;
+        }
         listing.requestCount = (listing.requestCount || 0) + 1;
 
         save();
@@ -1277,6 +1319,15 @@ window.Store = (function () {
            * leaves the open set, whoever is behind it moves up. */
           if (wasOpen && !CFG.isOpenRequest(r.status)) {
             this.resyncQueue(r.listingId, r.gameEntryId);
+            /* And a trade proposal that closed without completing hands the
+             * offered game back. Completion is excluded — confirmSold marks it
+             * sold, and releasing it here would relist a traded-away game. */
+            if (r.offeredGameEntryId && r.status !== 'completed') {
+              var oe = (db.entries[r.offeredListingId] || []).filter(function (x) {
+                return x.id === r.offeredGameEntryId;
+              })[0];
+              if (oe) { oe.status = 'active'; oe.reservedByRequestId = null; }
+            }
           }
         }
         save();
@@ -1450,11 +1501,27 @@ window.Store = (function () {
           if (u) u.tradeCount = (u.tradeCount || 0) + 1;
         });
 
-        var all = db.entries[r.listingId] || [];
-        if (all.length && all.every(function (e) { return e.status === 'sold'; })) {
-          var l = db.listings.filter(function (x) { return x.id === r.listingId; })[0];
-          if (l) { l.status = 'archived'; l.archivedAt = now; }
+        /* A completed trade moves TWO games. */
+        if (r.offeredGameEntryId && r.offeredListingId) {
+          var oe2 = (db.entries[r.offeredListingId] || []).filter(function (x) {
+            return x.id === r.offeredGameEntryId;
+          })[0];
+          if (oe2) {
+            oe2.status = 'sold';
+            oe2.reservedByRequestId = null;
+            oe2.currentHoldRequestId = null;
+            oe2.holdExpiresAt = null;
+            oe2.queueCount = 0;
+          }
         }
+
+        [r.listingId, r.offeredListingId].filter(Boolean).forEach(function (lid) {
+          var all = db.entries[lid] || [];
+          if (all.length && all.every(function (e) { return e.status === 'sold'; })) {
+            var l = db.listings.filter(function (x) { return x.id === lid; })[0];
+            if (l) { l.status = 'archived'; l.archivedAt = now; }
+          }
+        });
 
         save();
         return Promise.resolve({ already: false, completed: true, closedOthers: closed });
@@ -1683,8 +1750,26 @@ window.Store = (function () {
     submitReport: function (r) { return backend.submitReport(r); },
 
     /* ---- requests & chat (M4) + hold/queue (M5) ---- */
-    createRequest: function (listingId, gameEntryId) {
-      return backend.createRequest(listingId, gameEntryId);
+    createRequest: function (listingId, gameEntryId, trade) {
+      return backend.createRequest(listingId, gameEntryId, trade);
+    },
+
+    /* My own game entries that are genuinely free to put on the table: active,
+     * unsold, not already reserved in another trade, and not mid-queue. */
+    myOfferableEntries: function () {
+      return Store.queryListings({ sellerId: myUid, sort: 'new', limit: 30 })
+        .then(function (page) {
+          return Promise.all(page.items.map(function (l) {
+            return backend.getEntries(l.id).then(function (es) {
+              return es.filter(function (e) { return e.status === 'active'; })
+                .map(function (e) {
+                  return { listingId: l.id, listingTitle: l.title, entry: e };
+                });
+            });
+          }));
+        }).then(function (groups) {
+          return groups.reduce(function (a, b) { return a.concat(b); }, []);
+        });
     },
 
     /* Do I already have an open request on this game entry?

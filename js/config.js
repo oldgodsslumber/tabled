@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260820e';
+  var BUILD = '20260820f';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -237,6 +237,20 @@ window.CFG = (function () {
     maxDays: 14
   };
 
+  /* ---- Accepted payment (M10) --------------------------------------------
+   * Purely descriptive metadata. None of these are ever processed by the app —
+   * the same boundary as the game sale itself: Tabled displays what a seller is
+   * open to, and everything after that happens outside it.
+   *
+   * Only `trades` has any functional effect, and exactly one: it decides
+   * whether the "Propose a trade" button appears on that listing. */
+  var PAYMENT = [
+    { key: 'cash', label: 'Cash' },
+    { key: 'paypal', label: 'PayPal' },
+    { key: 'venmo', label: 'Venmo' },
+    { key: 'trades', label: 'Trades' }
+  ];
+
   /* ---- Distance ----------------------------------------------------------
    * Radius options for the "near me" filter, in miles. */
   var RADII = [5, 10, 25, 50, 100];
@@ -287,6 +301,7 @@ window.CFG = (function () {
     QUEUE: QUEUE,
     FEE: FEE,
     EVENT: EVENT,
+    PAYMENT: PAYMENT,
     isOpenRequest: isOpenRequest,
     REPORT_REASONS: REPORT_REASONS,
     SAFETY: SAFETY,

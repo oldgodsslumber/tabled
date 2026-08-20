@@ -45,6 +45,7 @@ window.CreateView = (function () {
         geoPoint: me.geoPoint || null,
         geohash: me.geohash || null,
         eventId: null, eventName: null, eventStartDate: null, eventEndDate: null,
+        acceptedPayment: { cash: true, paypal: false, venmo: false, trades: false },
         entries: [blankEntry()]
       };
       draw(root);
@@ -65,6 +66,9 @@ window.CreateView = (function () {
           eventName: l.eventName || null,
           eventStartDate: l.eventStartDate || null,
           eventEndDate: l.eventEndDate || null,
+          acceptedPayment: Object.assign(
+            { cash: true, paypal: false, venmo: false, trades: false },
+            l.acceptedPayment || {}),
           entries: es.length ? es.map(function (e) { return blankEntry(e); }) : [blankEntry()]
         };
         return Store.getGames(es.map(function (e) { return e.bggId; }).filter(Boolean));
@@ -115,6 +119,19 @@ window.CreateView = (function () {
             }).join('') +
           '</div>' +
           '<div id="event-picker">' + eventPickerHtml() + '</div>' +
+        '</section>' +
+
+        '<section class="block">' +
+          '<h2>What will you take?</h2>' +
+          '<div class="chip-row">' +
+            CFG.PAYMENT.map(function (pm) {
+              return '<button class="chip' + (draft.acceptedPayment[pm.key] ? ' on' : '') +
+                '" data-pay="' + U.attr(pm.key) + '">' + U.esc(pm.label) + '</button>';
+            }).join('') +
+          '</div>' +
+          '<p class="fine">Descriptive only — Tabled never handles any of it. ' +
+            'Ticking <strong>Trades</strong> is the one that does something: it puts a ' +
+            '“Propose a trade” button on this listing.</p>' +
         '</section>' +
 
         '<section class="block">' +
@@ -419,6 +436,12 @@ window.CreateView = (function () {
       }
     });
 
+    U.on(root, '[data-pay]', function (e, t) {
+      var k = t.dataset.pay;
+      draft.acceptedPayment[k] = !draft.acceptedPayment[k];
+      t.classList.toggle('on', draft.acceptedPayment[k]);
+    });
+
     U.on(root, '[data-ev]', function (e, t) {
       if (t.dataset.ev === 'pick' || t.dataset.ev === 'change') openEventPicker();
     });
@@ -626,6 +649,7 @@ window.CreateView = (function () {
           eventName: draft.eventName,
           eventStartDate: draft.eventStartDate,
           eventEndDate: draft.eventEndDate,
+          acceptedPayment: draft.acceptedPayment,
           countryCode: draft.countryCode || null,
           state: draft.state || null,
           status: 'active'
