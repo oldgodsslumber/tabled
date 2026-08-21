@@ -1113,6 +1113,30 @@ select {
 .audit-who { display: flex; flex-direction: column; align-items: flex-end; flex: none; }
 .audit-who .fine { margin: 0; }
 
+/* ---- Meeting toolkit & address exchange --------------------------------- */
+
+.meet-toolkit { background: var(--navy-050); border-bottom-color: #d7dcf0; }
+.meet-toolkit .fine { flex-basis: 100%; margin: 0 0 .4rem; }
+
+.addr-waiting {
+  flex-basis: 100%;
+  margin-top: .5rem;
+  padding: .6rem .7rem;
+  background: var(--amber-dim);
+  border-radius: var(--r-sm);
+}
+.addr-waiting .fine { margin: 0 0 .4rem; }
+
+.addr-reveal {
+  padding: 1rem;
+  background: var(--cream);
+  border: 2px solid var(--navy);
+  border-radius: var(--r);
+  text-align: center;
+  margin-bottom: .75rem;
+}
+.addr-line { margin: 0; font-size: 1.15rem; font-weight: 650; white-space: pre-wrap; }
+
 /* ---- Overflow menu ------------------------------------------------------- */
 
 .overflow { position: relative; flex: none; }

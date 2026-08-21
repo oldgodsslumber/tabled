@@ -382,6 +382,21 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "//": "archiveClosedThreads: closed deals past the retention cutoff",
+      "collectionGroup": "requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

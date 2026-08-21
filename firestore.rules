@@ -264,6 +264,40 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---- meetingDetails (gated address exchange) ----
+
+    match /meetingDetails/{requestId} {
+      // NOBODY reads or writes this from a client. The address is stored
+      // encrypted and handed back only through the readMeetingAddress
+      // callable, which holds the key and checks the recipient. A
+      // client-readable address at rest would defeat the entire point:
+      // "disappears from the UI" has to mean "gone from the server".
+      //
+      // Not even staff. A pickup address is more sensitive than a chat log,
+      // and staff have no reason to see where two people are meeting.
+      allow read, write: if false;
+    }
+
+    // ---- messageArchive (admin-only, short-lived) ----
+
+    match /messageArchive/{requestId} {
+      // Admins only, and never moderators — an archived private thread is the
+      // most sensitive thing retained. Written and deleted only by the
+      // scheduled sweep and Firestore TTL; no client write, ever.
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // ---- safeSpots (public venue cache) ----
+
+    match /safeSpots/{cell} {
+      // Public places from OpenStreetMap. Readable by any signed-in user so
+      // the picker can render without a round trip; written only by the
+      // findSafeSpots function.
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
     // ---- config ----
 
     match /config/{docId} {
@@ -333,7 +367,11 @@ service cloud.firestore {
         && !changed(['feePaid', 'feeWaived', 'buyerId', 'sellerId', 'queuePosition',
                      'listingId', 'gameEntryId', 'createdAt',
                      'buyerConfirmedAt', 'sellerConfirmedAt', 'completedAt',
-                     'closedReason', 'bookedSlotId', 'holdExpiresAt'])
+                     'closedReason', 'bookedSlotId', 'holdExpiresAt',
+                     // Address pointers and archival flag are function-only —
+                     // the address flow is entirely server-mediated.
+                     'meetingAddressPending', 'meetingAddressFor',
+                     'messagesArchived'])
         // Only the current holder may put a time on the table; someone sitting
         // at position 3 can read and chat but cannot jump the queue.
         && (request.resource.data.status != 'proposedTime'

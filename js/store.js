@@ -715,6 +715,35 @@ window.Store = (function () {
         return fb.updateDoc(docRef('requests', id), patch).catch(function () {});
       },
 
+      /* ---- Meeting address exchange & safe spots ----
+       * The address never touches the messages subcollection. It is released
+       * through a callable, stored encrypted, read back through a callable,
+       * and deleted on pickup — so it is never a client-readable field at rest
+       * and never lands in the archived thread. */
+      releaseMeetingAddress: function (requestId, address, ttlMs) {
+        return callable('releaseMeetingAddress', {
+          requestId: requestId, address: address, ttlMs: ttlMs
+        });
+      },
+      readMeetingAddress: function (requestId) {
+        return callable('readMeetingAddress', { requestId: requestId });
+      },
+      confirmPickup: function (requestId) {
+        return callable('confirmPickup', { requestId: requestId });
+      },
+      findSafeSpots: function (lat, lng) {
+        return callable('findSafeSpots', { lat: lat, lng: lng })
+          .then(function (r) { return (r && r.spots) || []; });
+      },
+
+      /* Admin-only. Archived threads are the most sensitive thing retained,
+       * so the read is narrowest — full admins, nobody else. */
+      readArchivedThread: function (requestId) {
+        return fb.getDoc(docRef('messageArchive', requestId)).then(function (snap) {
+          return snap.exists() ? snap.data() : null;
+        });
+      },
+
       /* ---- Auto-book (M6) ---- */
 
       /* Which of a seller's increments are already taken. Readable by any
@@ -930,6 +959,8 @@ window.Store = (function () {
           parsed.reviews = parsed.reviews || {};
           parsed.events = parsed.events || {};
           parsed.adminActions = parsed.adminActions || [];
+          parsed.meetingDetails = parsed.meetingDetails || {};
+          parsed.messageArchive = parsed.messageArchive || {};
           return parsed;
         }
       } catch (e) { /* fall through to seed */ }
@@ -1027,7 +1058,7 @@ window.Store = (function () {
 
       return {
         users: users, games: games, listings: listings, entries: entries,
-        blocked: {}, reports: {}, requests: [], messages: {}, slots: {}, reviews: {}, events: {}, adminActions: []
+        blocked: {}, reports: {}, requests: [], messages: {}, slots: {}, reviews: {}, events: {}, adminActions: [], meetingDetails: {}, messageArchive: {}
       };
     }
 
@@ -1431,6 +1462,17 @@ window.Store = (function () {
         return Promise.resolve();
       },
 
+      _testPoke: function (kind, id, patch) {
+        if (kind === 'request') {
+          var r = find(id);
+          if (r) Object.keys(patch).forEach(function (k) { r[k] = patch[k]; });
+        } else if (kind === 'meetingExpiry') {
+          if (db.meetingDetails && db.meetingDetails[id]) db.meetingDetails[id].expireAtMs = patch;
+        }
+        save();
+        return Promise.resolve();
+      },
+
       /* Demo-only. Stands in for advanceExpiredHolds so the promotion path is
        * exercisable without waiting 24 hours or deploying a scheduler. */
       runExpirySweep: function (nowMs) {
@@ -1474,6 +1516,96 @@ window.Store = (function () {
         if (r) r[isBuyer ? 'lastReadBuyerAt' : 'lastReadSellerAt'] = Date.now();
         save();
         return Promise.resolve();
+      },
+
+      /* Address exchange, demo edition. No real encryption offline — the point
+       * being exercised is the FLOW (release -> pending pointer -> read once ->
+       * cleared on pickup), not the cipher, which is unit-tested separately. */
+      releaseMeetingAddress: function (requestId, address, ttlMs) {
+        var r = find(requestId);
+        if (!r) return Promise.reject(new Error('No such request'));
+        if (r.buyerId !== myUid && r.sellerId !== myUid) {
+          return Promise.reject(new Error('Not your trade'));
+        }
+        if (['proposedTime', 'scheduled'].indexOf(r.status) === -1) {
+          return Promise.reject(new Error('Agree a time before sharing an address'));
+        }
+        var recipientId = r.buyerId === myUid ? r.sellerId : r.buyerId;
+        var ttl = Math.min(Math.max(ttlMs || 24 * 3600000, 3600000), 48 * 3600000);
+        db.meetingDetails = db.meetingDetails || {};
+        db.meetingDetails[requestId] = {
+          senderId: myUid, recipientId: recipientId, address: address,
+          expireAtMs: Date.now() + ttl
+        };
+        r.meetingAddressPending = true;
+        r.meetingAddressFor = recipientId;
+        save();
+        return Promise.resolve({ ok: true, expireAtMs: Date.now() + ttl });
+      },
+      readMeetingAddress: function (requestId) {
+        var m = (db.meetingDetails || {})[requestId];
+        if (!m) return Promise.reject(new Error('No address is waiting'));
+        if (m.recipientId !== myUid) return Promise.reject(new Error('Not shared with you'));
+        if (m.expireAtMs < Date.now()) {
+          delete db.meetingDetails[requestId]; save();
+          return Promise.reject(new Error('That address has expired'));
+        }
+        return Promise.resolve({ address: m.address, expireAtMs: m.expireAtMs });
+      },
+      confirmPickup: function (requestId) {
+        var r = find(requestId);
+        if (!r) return Promise.reject(new Error('No such request'));
+        if (db.meetingDetails) delete db.meetingDetails[requestId];
+        r.meetingAddressPending = false;
+        r.meetingAddressFor = null;
+        save();
+        return Promise.resolve({ ok: true });
+      },
+      findSafeSpots: function (lat, lng) {
+        /* A couple of plausible fixed spots near the demo area, so the picker
+         * is exercisable offline without hitting Overpass. */
+        return Promise.resolve([
+          { name: "Jacksonville Sheriff's Office", kind: 'police', lat: 30.331, lng: -81.655, distanceMi: 0.4 },
+          { name: 'Urban Grind', kind: 'cafe', lat: 30.328, lng: -81.66, distanceMi: 0.7 },
+          { name: 'Main Library', kind: 'library', lat: 30.327, lng: -81.658, distanceMi: 0.9 }
+        ]);
+      },
+
+      /* Demo archive: the sweep runs on demand via runArchiveSweep below. */
+      readArchivedThread: function (requestId) {
+        return Promise.resolve((db.messageArchive || {})[requestId] || null);
+      },
+
+      /* Stands in for archiveClosedThreads so the retention behaviour is
+       * testable without waiting five days. */
+      runArchiveSweep: function (nowMs) {
+        var now = nowMs || Date.now();
+        var cutoff = now - 5 * 86400000;
+        var archived = 0;
+        db.messageArchive = db.messageArchive || {};
+        db.requests.forEach(function (r) {
+          if (['completed', 'cancelled', 'expired'].indexOf(r.status) === -1) return;
+          if (r.messagesArchived) return;
+          if ((r.updatedAt || 0) > cutoff) return;
+          var msgs = db.messages[r.id] || [];
+          if (msgs.length) {
+            db.messageArchive[r.id] = {
+              requestId: r.id, buyerId: r.buyerId, sellerId: r.sellerId,
+              gameName: r.gameName || '', closedStatus: r.status,
+              messages: msgs.map(function (m) {
+                return { senderId: m.senderId, text: m.text, createdAt: m.createdAt };
+              }),
+              archivedAt: now, expireAtMs: now + 5 * 86400000
+            };
+            db.messages[r.id] = [];   /* gone from where participants read */
+          }
+          if (db.meetingDetails) delete db.meetingDetails[r.id];
+          r.messagesArchived = true;
+          r.lastMessageText = '';
+          archived++;
+        });
+        save();
+        return Promise.resolve({ archived: archived });
       },
 
       /* ---- Auto-book (M6), demo edition ----
@@ -2050,6 +2182,20 @@ window.Store = (function () {
     /* ---- completion & reviews (M7) ---- */
     confirmSold: function (requestId) { return backend.confirmSold(requestId); },
     startFeeCheckout: function (requestId) { return backend.startFeeCheckout(requestId); },
+
+    /* ---- meeting address & safe spots ---- */
+    releaseMeetingAddress: function (id, addr, ttlMs) { return backend.releaseMeetingAddress(id, addr, ttlMs); },
+    readMeetingAddress: function (id) { return backend.readMeetingAddress(id); },
+    confirmPickup: function (id) { return backend.confirmPickup(id); },
+    findSafeSpots: function (lat, lng) { return backend.findSafeSpots(lat, lng); },
+    readArchivedThread: function (id) { return backend.readArchivedThread(id); },
+    _testPoke: function (kind, id, patch) {
+      return backend._testPoke ? backend._testPoke(kind, id, patch) : Promise.resolve();
+    },
+    runArchiveSweep: function (nowMs) {
+      return backend.runArchiveSweep ? backend.runArchiveSweep(nowMs)
+        : Promise.reject(new Error('Archival runs server-side in cloud mode'));
+    },
 
     /* ---- admin console ---- */
     listOpenReports: function () { return backend.listOpenReports(); },

@@ -235,7 +235,8 @@ window.ThreadView = (function () {
     var host = U.$('#t-sched', root);
     if (!host) return;
     var key = [req.status, req.proposedTime, req.buyerConfirmedAt,
-      req.sellerConfirmedAt, req.closedReason].join('|');
+      req.sellerConfirmedAt, req.closedReason,
+      req.meetingAddressPending, req.meetingAddressFor].join('|');
     if (lastRenderedStatus === key) return;
     lastRenderedStatus = key;
 
@@ -319,7 +320,8 @@ window.ThreadView = (function () {
               (theirsDone ? 'Confirm — completes the trade' : 'Mark as done') + '</button>') +
           (mineDone ? '' :
             '<button class="btn ghost small" data-act="propose">Change the time</button>') +
-        '</div>';
+        '</div>' +
+        meetingToolkit(req);
 
     } else if (req.status === 'cancelled' || req.status === 'expired') {
       html = '<div class="sched closed"><p class="sched-state">' +
@@ -349,6 +351,10 @@ window.ThreadView = (function () {
       else if (act === 'slots') slotDialog(req);
       else if (act === 'sold') confirmSold(req, t);
       else if (act === 'review') reviewDialog(req);
+      else if (act === 'share-address') shareAddressDialog(req);
+      else if (act === 'view-address') viewAddressDialog(req);
+      else if (act === 'safe-spot') safeSpotDialog(req);
+      else if (act === 'confirm-pickup') confirmPickup(req);
       else if (act === 'confirm') respond(req, true);
       else if (act === 'decline') respond(req, false);
       else if (act === 'cancel') cancel(req, amSeller);
@@ -610,6 +616,180 @@ window.ThreadView = (function () {
         console.error('[tabled] cancel failed', err);
         U.toast('Could not cancel', 'bad');
       });
+    });
+  }
+
+  /* ---- Meeting toolkit (privacy & safety) ---------------------------------
+   * Sits under a confirmed pickup. The address is never typed into the chat —
+   * it is released through a one-time card, read once, and cleared on pickup.
+   * A safe public place can be picked instead, which sidesteps sharing a home
+   * address at all. */
+  function meetingToolkit(req) {
+    if (req.method === 'shipping') {
+      return '<div class="sched meet-toolkit">' +
+        '<p class="fine"><strong>Shipping.</strong> Share the delivery address ' +
+        'with the seller when you\'re both ready. Shipping means giving a ' +
+        'stranger your address \u2014 there\'s no way around that part.</p>' +
+        '<button class="btn ghost small" data-act="share-address">Share my address</button>' +
+        addressPendingFor(req) +
+      '</div>';
+    }
+    return '<div class="sched meet-toolkit">' +
+      '<p class="fine"><strong>Meeting up.</strong> Pick somewhere public, or ' +
+      'share an address only when you\'re actually on your way.</p>' +
+      '<div class="chip-row">' +
+        '<button class="btn ghost small" data-act="safe-spot">Suggest a safe spot</button>' +
+        '<button class="btn ghost small" data-act="share-address">Share an address</button>' +
+      '</div>' +
+      addressPendingFor(req) +
+    '</div>';
+  }
+
+  /* When an address is waiting FOR me, show the read-once button. */
+  function addressPendingFor(req) {
+    if (req.meetingAddressPending && req.meetingAddressFor === Store.uid()) {
+      return '<div class="addr-waiting">' +
+        '<p class="fine">An address is waiting for you. Open it when you\'re ready ' +
+        'to head over \u2014 it disappears once you confirm pickup.</p>' +
+        '<button class="btn small" data-act="view-address">Show the address</button>' +
+      '</div>';
+    }
+    if (req.meetingAddressPending && req.meetingAddressFor !== Store.uid()) {
+      return '<p class="fine">You\'ve shared an address. It clears automatically ' +
+        'once they confirm pickup, or after the window you set.</p>';
+    }
+    return '';
+  }
+
+  function shareAddressDialog(req) {
+    var m = U.modal('Share an address',
+      '<p class="modal-msg">This goes straight to ' +
+        U.esc(req.sellerId === Store.uid() ? (req.buyerName || 'the buyer') : (req.sellerName || 'the seller')) +
+        ' and nowhere else. It is never posted in the chat, and Tabled stores it ' +
+        'encrypted only until pickup is confirmed.</p>' +
+      '<label class="field"><span>Address</span>' +
+        '<textarea id="addr-text" rows="3" maxlength="400" ' +
+          'placeholder="42 Elm Street, Apt 3B\nWorcester, MA 01609"></textarea></label>' +
+      '<label class="field"><span>Keep it available for</span>' +
+        '<select id="addr-ttl">' +
+          '<option value="today">Just today</option>' +
+          '<option value="24" selected>24 hours</option>' +
+          (U.toDate(req.scheduledTime) ? '<option value="sched">Until our time, plus a few hours</option>' : '') +
+          '<option value="48">48 hours</option>' +
+        '</select>' +
+        '<span class="fine">It clears the moment they confirm pickup, whichever comes first. ' +
+          'Maximum 48 hours either way.</span>' +
+      '</label>' +
+      '<div class="modal-actions">' +
+        '<button class="btn ghost" data-act="cancel">Cancel</button>' +
+        '<button class="btn" data-act="send">Share it</button>' +
+      '</div>');
+
+    U.on(m.el, '[data-act]', function (e, t) {
+      if (t.dataset.act === 'cancel') { m.close(); return; }
+      var addr = U.$('#addr-text', m.el).value.trim();
+      if (addr.length < 5) { U.toast('That address looks too short', 'warn'); return; }
+
+      var choice = U.$('#addr-ttl', m.el).value;
+      var ttlMs = 24 * 3600000;
+      if (choice === 'today') {
+        var end = new Date(); end.setHours(23, 59, 59, 0);
+        ttlMs = Math.max(3600000, end.getTime() - Date.now());
+      } else if (choice === '48') ttlMs = 48 * 3600000;
+      else if (choice === 'sched') {
+        var st = U.toDate(req.scheduledTime);
+        if (st) ttlMs = Math.max(3600000, st.getTime() + 3 * 3600000 - Date.now());
+      }
+
+      t.disabled = true;
+      t.textContent = 'Sharing\u2026';
+      Store.releaseMeetingAddress(req.id, addr, ttlMs).then(function () {
+        m.close();
+        U.toast('Address shared \u2014 it clears on pickup');
+      }).catch(function (err) {
+        console.error('[tabled] address release failed', err);
+        U.toast((err && err.message) || 'Could not share that', 'bad');
+        t.disabled = false;
+        t.textContent = 'Share it';
+      });
+    });
+  }
+
+  function viewAddressDialog(req) {
+    var m = U.modal('Meeting address', U.spinner('Opening'));
+    Store.readMeetingAddress(req.id).then(function (res) {
+      m.el.innerHTML =
+        '<div class="addr-reveal">' +
+          '<p class="addr-line">' + U.esc(res.address) + '</p>' +
+        '</div>' +
+        '<p class="fine">Available until ' + U.esc(whenLabel(new Date(res.expireAtMs))) +
+          '. Confirm pickup once you have the game and it clears immediately.</p>' +
+        '<div class="modal-actions">' +
+          '<button class="btn ghost" data-act="close">Close</button>' +
+          '<button class="btn" data-act="picked">I\'ve picked it up</button>' +
+        '</div>';
+      U.on(m.el, '[data-act]', function (e, t) {
+        if (t.dataset.act === 'close') { m.close(); return; }
+        m.close();
+        confirmPickup(req);
+      });
+    }).catch(function (err) {
+      m.el.innerHTML = U.empty('No address',
+        (err && err.message) || 'Nothing is waiting for you.');
+    });
+  }
+
+  function confirmPickup(req) {
+    Store.confirmPickup(req.id).then(function () {
+      U.toast('Pickup confirmed \u2014 address cleared');
+    }).catch(function (err) {
+      console.error('[tabled] confirm pickup failed', err);
+      U.toast((err && err.message) || 'Could not confirm', 'bad');
+    });
+  }
+
+  function safeSpotDialog(req) {
+    var me = Store.me();
+    if (!me || !me.geoPoint) {
+      U.toast('Set your general area first, in your profile', 'warn');
+      return;
+    }
+    var m = U.modal('Somewhere safe to meet', U.spinner('Finding public places'));
+    Store.findSafeSpots(me.geoPoint.lat, me.geoPoint.lng).then(function (spots) {
+      if (!spots.length) {
+        m.el.innerHTML = U.empty('Nothing found nearby',
+          'Pick a public place you both know \u2014 a busy cafe or a police station ' +
+          'exchange zone is the usual advice.');
+        return;
+      }
+      var KIND = { police: 'Police exchange zone', cafe: 'Cafe', library: 'Library' };
+      m.el.innerHTML =
+        '<p class="modal-msg">Meeting in public is the single best safety step. ' +
+        'Police-station exchange zones are safest; a busy cafe is fine too.</p>' +
+        '<div class="event-list">' +
+          spots.map(function (sp) {
+            return '<button class="event-row" data-spot="' + U.attr(sp.name) + '">' +
+              '<div class="grow">' +
+                '<strong>' + U.esc(sp.name) + '</strong>' +
+                '<span class="fine">' + U.esc(KIND[sp.kind] || sp.kind) +
+                  ' \u00b7 ' + U.esc(sp.distanceMi + ' mi') + '</span>' +
+              '</div></button>';
+          }).join('') +
+        '</div>' +
+        '<p class="bgg-attrib"><a href="https://www.openstreetmap.org/copyright" ' +
+          'target="_blank" rel="noopener noreferrer">\u00a9 OpenStreetMap contributors</a></p>';
+
+      U.on(m.el, '[data-spot]', function (e, t) {
+        var name = t.dataset.spot;
+        m.close();
+        /* Posting it into chat is fine — a public venue name is not private,
+         * and it gives both people a shared, non-address meeting point. */
+        Store.sendMessage(req.id, 'Let\'s meet at ' + name + '?');
+        U.toast('Suggested ' + name + ' in the chat');
+      });
+    }).catch(function (err) {
+      m.el.innerHTML = U.empty('Could not look that up',
+        (err && err.message) || 'Try again in a moment.');
     });
   }
 

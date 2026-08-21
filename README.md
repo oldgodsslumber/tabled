@@ -761,6 +761,51 @@ clawing back would darken a badge over history the person can no longer act on.
 
 ---
 
+## Privacy & safety: retention, gated addresses, safe meeting spots
+
+**Messages live only through the deal.** `archiveClosedThreads` (scheduled,
+every 6h) moves a closed deal's messages into an admin-only `messageArchive`
+after `ARCHIVE_DAYS` (5), deletes them from where the participants can read
+them, and stamps the archive with its own expiry. "Secretly archived" means
+staff-only, which means the messages have to *move*, not linger — leaving them
+in place for five days is not archival, the participants still see them.
+
+**Addresses never enter the chat.** They're released through
+`releaseMeetingAddress`, stored **encrypted** (AES-256-GCM, key in Secret
+Manager) in `meetingDetails`, which **no client and no staff can read**. The
+recipient reads it back through `readMeetingAddress` — a callable, deliberately,
+because a client-readable address at rest would make "disappears from the UI"
+a lie. It's deleted the instant pickup is confirmed, or on a sender-chosen
+backstop timer capped at 48h.
+
+**The safest option needs no address at all.** `findSafeSpots` queries
+OpenStreetMap (Overpass) for nearby police exchange zones, cafes and libraries,
+cached by coarse geohash. Picking one posts a public venue name into chat —
+private nothing.
+
+### Required Firestore TTL policies — set these in the console
+
+The functions delete on schedule, but **Firestore TTL is the backstop that
+fires even if a function never runs.** Set two, in Firestore → TTL:
+
+| Collection | TTL field |
+|---|---|
+| `meetingDetails` | `expireAt` |
+| `messageArchive` | `expireAt` |
+| `safeSpots` | `expireAt` (optional — just cache hygiene) |
+
+Without these, a released address whose pickup is never confirmed, and an
+archive whose delete sweep is skipped, would persist. The `expireAt` fields are
+already written; the policy is what makes Firestore act on them.
+
+### Required secret
+
+`ADDRESS_ENC_KEY` — a 32-byte base64 key (`openssl rand -base64 32`). Already
+set to a real value on `tabled-2ad11`. Without it the address functions fail
+closed rather than storing plaintext.
+
+---
+
 ## Where this build stops
 
 **Working now (M1–M4):**

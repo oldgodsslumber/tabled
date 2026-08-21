@@ -1864,6 +1864,341 @@ exports.setUserRole = onCall(async (req) => {
   return { ok: true, role: role || null, tokenRefreshRequired: true };
 });
 
+/* =========================================================================
+ * Privacy & safety — message retention, gated address exchange, safe spots
+ *
+ * Three connected pieces, all serving one goal: hold as little personal data
+ * as possible, for as short a time as possible, in the fewest hands.
+ *
+ *   1. Messages live only through the deal, then move to an admin-only archive
+ *      for a few days, then are deleted outright. A closed trade should not
+ *      leave a permanent, subpoenable, breachable log of who met whom where.
+ *
+ *   2. A pickup address is never stored in a message. It is released once, by
+ *      the person who owns it, on a deliberate act, encrypted at rest, and
+ *      deleted the moment pickup is confirmed — or on a short backstop timer
+ *      the sender chooses within a hard cap.
+ *
+ *   3. The safest meeting option — a public place, a police exchange zone —
+ *      is a first-class button that needs no address at all.
+ * ========================================================================= */
+
+const crypto = require('crypto');
+
+/* Days a closed deal's messages stay in the admin-only archive before hard
+ * deletion. Deliberately short: a local trade either happens within days or
+ * falls apart, and a moderation record only needs to outlive the trade. */
+const ARCHIVE_DAYS = 5;
+
+/* The terminal statuses. A deal in one of these is over, and its message log
+ * starts its countdown to archival. */
+const CLOSED_STATUSES = ['completed', 'cancelled', 'expired'];
+
+/* Encrypts released addresses at rest. A leaked or subpoenaed meetingDetails
+ * doc is ciphertext without this key, which lives only in Secret Manager. */
+const ADDRESS_KEY = defineSecret('ADDRESS_ENC_KEY');
+
+/* Hard ceiling on how long a released address may sit before self-deleting,
+ * regardless of what the sender picks. The safety model depends on addresses
+ * being short-lived; the sender chooses within this bound, never past it. */
+const ADDRESS_MAX_TTL_MS = 48 * 3600000;
+
+/* ---- Address encryption -------------------------------------------------- */
+
+function encKey() {
+  const raw = ADDRESS_KEY.value();
+  if (!raw || raw === 'PLACEHOLDER_SET_A_REAL_KEY') {
+    throw new HttpsError('failed-precondition',
+      'Address exchange is not configured. Set ADDRESS_ENC_KEY to a 32-byte ' +
+      'base64 key (openssl rand -base64 32).');
+  }
+  const key = Buffer.from(raw, 'base64');
+  if (key.length !== 32) {
+    throw new HttpsError('failed-precondition', 'ADDRESS_ENC_KEY must decode to 32 bytes');
+  }
+  return key;
+}
+
+function encryptAddress(plain) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', encKey(), iv);
+  const ct = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  /* iv.tag.ciphertext, all base64 — everything decrypt needs, nothing it doesn't. */
+  return iv.toString('base64') + '.' + tag.toString('base64') + '.' + ct.toString('base64');
+}
+
+function decryptAddress(blob) {
+  const [ivB, tagB, ctB] = String(blob).split('.');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', encKey(), Buffer.from(ivB, 'base64'));
+  decipher.setAuthTag(Buffer.from(tagB, 'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(ctB, 'base64')), decipher.final()]).toString('utf8');
+}
+
+/* ---- releaseMeetingAddress ----------------------------------------------
+ * The sender deliberately releases their address to the other party. This is
+ * an ACT, not a stored field — Jerry decides you're really coming and sends
+ * it. It never touches the messages subcollection, so it never lands in the
+ * archive or a breach of it.
+ */
+exports.releaseMeetingAddress = onCall({ secrets: [ADDRESS_KEY] }, async (req) => {
+  requireAuth(req);
+  const uid = req.auth.uid;
+  const d = req.data || {};
+  const requestId = String(d.requestId || '');
+  const address = String(d.address || '').trim();
+  const ttlChoiceMs = Number(d.ttlMs);
+
+  if (!requestId) throw new HttpsError('invalid-argument', 'requestId is required');
+  if (address.length < 5 || address.length > 400) {
+    throw new HttpsError('invalid-argument', 'That address looks wrong');
+  }
+
+  const reqSnap = await db.collection('requests').doc(requestId).get();
+  if (!reqSnap.exists) throw new HttpsError('not-found', 'No such request');
+  const r = reqSnap.data();
+
+  if (r.buyerId !== uid && r.sellerId !== uid) {
+    throw new HttpsError('permission-denied', 'Not your trade');
+  }
+  if (!['proposedTime', 'scheduled'].includes(r.status)) {
+    throw new HttpsError('failed-precondition',
+      'Agree a time before sharing an address');
+  }
+
+  /* Capped. The sender chooses the window; the ceiling is not theirs to lift,
+   * because the whole point is that addresses do not linger. */
+  const ttl = Number.isFinite(ttlChoiceMs)
+    ? Math.min(Math.max(ttlChoiceMs, 3600000), ADDRESS_MAX_TTL_MS)
+    : 24 * 3600000;
+  const expireAtMs = Date.now() + ttl;
+
+  /* recipientId is the OTHER party — the one allowed to read it back. */
+  const recipientId = r.buyerId === uid ? r.sellerId : r.buyerId;
+
+  await db.collection('meetingDetails').doc(requestId).set({
+    requestId,
+    senderId: uid,
+    recipientId,
+    ciphertext: encryptAddress(address),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    /* Firestore TTL policy deletes on this field — the backstop that fires
+     * even if pickup is never confirmed and no function ever runs. */
+    expireAt: admin.firestore.Timestamp.fromMillis(expireAtMs)
+  });
+
+  /* A pointer on the request so both clients can see an address is waiting,
+   * without the address itself being anywhere near the request doc. */
+  await reqSnap.ref.update({
+    meetingAddressPending: true,
+    meetingAddressFor: recipientId,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  return { ok: true, expireAtMs };
+});
+
+/* ---- readMeetingAddress --------------------------------------------------
+ * The recipient reads it back. Deliberately a callable rather than a readable
+ * doc: the address must never be client-readable at rest, or "disappears from
+ * the UI" would not mean "gone from your servers". Only this function, holding
+ * the key, can turn the stored ciphertext into an address.
+ */
+exports.readMeetingAddress = onCall({ secrets: [ADDRESS_KEY] }, async (req) => {
+  requireAuth(req);
+  const uid = req.auth.uid;
+  const requestId = String((req.data || {}).requestId || '');
+  if (!requestId) throw new HttpsError('invalid-argument', 'requestId is required');
+
+  const snap = await db.collection('meetingDetails').doc(requestId).get();
+  if (!snap.exists) throw new HttpsError('not-found', 'No address is waiting');
+  const m = snap.data();
+
+  /* Only the intended recipient, and only before it expires. */
+  if (m.recipientId !== uid) throw new HttpsError('permission-denied', 'Not shared with you');
+  if (m.expireAt && m.expireAt.toMillis() < Date.now()) {
+    await snap.ref.delete().catch(() => {});
+    throw new HttpsError('not-found', 'That address has expired');
+  }
+
+  return { address: decryptAddress(m.ciphertext), expireAtMs: m.expireAt.toMillis() };
+});
+
+/* ---- confirmPickup -------------------------------------------------------
+ * The receiver confirms they have the item. This deletes the address
+ * IMMEDIATELY — not on a timer. The timer is only the backstop for the case
+ * where nobody ever confirms.
+ */
+exports.confirmPickup = onCall(async (req) => {
+  requireAuth(req);
+  const uid = req.auth.uid;
+  const requestId = String((req.data || {}).requestId || '');
+  if (!requestId) throw new HttpsError('invalid-argument', 'requestId is required');
+
+  const reqSnap = await db.collection('requests').doc(requestId).get();
+  if (!reqSnap.exists) throw new HttpsError('not-found', 'No such request');
+  const r = reqSnap.data();
+  if (r.buyerId !== uid && r.sellerId !== uid) {
+    throw new HttpsError('permission-denied', 'Not your trade');
+  }
+
+  await db.collection('meetingDetails').doc(requestId).delete().catch(() => {});
+  await reqSnap.ref.update({
+    meetingAddressPending: false,
+    meetingAddressFor: null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  return { ok: true };
+});
+
+/* ---- archiveClosedThreads ------------------------------------------------
+ * Scheduled sweep. A deal closed more than ARCHIVE_DAYS ago has its messages
+ * MOVED to an admin-only archive and deleted from where the participants can
+ * read them. "Secretly archived" means staff-only, which means the messages
+ * must move, not linger — leaving them in place for five days is not archival,
+ * the participants still see them.
+ *
+ * The archive is itself given a TTL, so "kept for five days" does not become
+ * "kept forever in a different drawer".
+ */
+exports.archiveClosedThreads = onSchedule('every 6 hours', async () => {
+  const cutoff = admin.firestore.Timestamp.fromMillis(
+    Date.now() - ARCHIVE_DAYS * 86400000);
+
+  /* Closed, past the cutoff, not already archived. */
+  const closed = await db.collection('requests')
+    .where('status', 'in', CLOSED_STATUSES)
+    .where('updatedAt', '<=', cutoff)
+    .limit(100).get();
+
+  let archived = 0, skipped = 0;
+  for (const doc of closed.docs) {
+    if (doc.data().messagesArchived) { skipped++; continue; }
+
+    const msgsRef = doc.ref.collection('messages');
+    const msgs = await msgsRef.orderBy('createdAt', 'asc').limit(1000).get();
+
+    if (!msgs.empty) {
+      /* Copy into the admin-only archive as one document — a closed thread is
+       * small, and one doc is cheaper to read, delete and TTL than a mirrored
+       * subcollection. */
+      await db.collection('messageArchive').doc(doc.id).set({
+        requestId: doc.id,
+        buyerId: doc.data().buyerId,
+        sellerId: doc.data().sellerId,
+        gameName: doc.data().gameName || '',
+        closedStatus: doc.data().status,
+        messages: msgs.docs.map((m) => {
+          const x = m.data();
+          return {
+            senderId: x.senderId,
+            text: x.text,
+            createdAt: x.createdAt || null
+          };
+        }),
+        archivedAt: admin.firestore.FieldValue.serverTimestamp(),
+        /* The archive expires too. Firestore TTL deletes on this field. */
+        expireAt: admin.firestore.Timestamp.fromMillis(Date.now() + ARCHIVE_DAYS * 86400000)
+      });
+
+      /* Delete the live messages in batches. */
+      const batch = db.batch();
+      msgs.docs.forEach((m) => batch.delete(m.ref));
+      await batch.commit();
+    }
+
+    /* Any released address that somehow outlived the deal goes now too. */
+    await db.collection('meetingDetails').doc(doc.id).delete().catch(() => {});
+
+    await doc.ref.update({
+      messagesArchived: true,
+      lastMessageText: '',
+      updatedAt: doc.data().updatedAt   /* preserve — do NOT reset the sort */
+    });
+    archived++;
+  }
+
+  console.log(`archiveClosedThreads: ${archived} archived, ${skipped} already done`);
+});
+
+/* ---- findSafeSpots -------------------------------------------------------
+ * Nearby public places to meet, from OpenStreetMap via Overpass. Police
+ * "exchange zones" first, then cafes and libraries.
+ *
+ * Server-side and cached for three reasons that all point the same way: the
+ * Overpass usage policy discourages heavy client-side use; a neighbourhood's
+ * coffee shops do not move, so one cached call serves everyone nearby; and it
+ * keeps the precise pickup address off the request entirely — this takes a
+ * ROUGH point and returns public venues.
+ */
+exports.findSafeSpots = onCall(async (req) => {
+  requireAuth(req);
+  const d = req.data || {};
+  const lat = Number(d.lat), lng = Number(d.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new HttpsError('invalid-argument', 'lat and lng are required');
+  }
+
+  /* Cache by coarse geohash (precision 6 ≈ 1.2km cell) so a whole area is one
+   * Overpass call, refreshed monthly. */
+  const cellHash = Geo.encode(lat, lng, 6);
+  const cacheRef = db.collection('safeSpots').doc(cellHash);
+  const cached = await cacheRef.get();
+  if (cached.exists) {
+    const c = cached.data();
+    const ageMs = Date.now() - (c.fetchedAt ? c.fetchedAt.toMillis() : 0);
+    if (ageMs < 30 * 86400000) return { spots: c.spots, cached: true };
+  }
+
+  /* police exchange zones, cafes, libraries within ~2km. */
+  const query = '[out:json][timeout:20];(' +
+    'node["amenity"="police"](around:2500,' + lat + ',' + lng + ');' +
+    'node["amenity"="cafe"](around:2000,' + lat + ',' + lng + ');' +
+    'node["amenity"="library"](around:2500,' + lat + ',' + lng + ');' +
+    ');out body 30;';
+
+  let elements = [];
+  try {
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'data=' + encodeURIComponent(query)
+    });
+    if (!res.ok) throw new Error('Overpass ' + res.status);
+    const body = await res.json();
+    elements = body.elements || [];
+  } catch (err) {
+    console.warn('findSafeSpots: Overpass failed', err.message);
+    if (cached.exists) return { spots: cached.data().spots, cached: true, stale: true };
+    throw new HttpsError('unavailable', 'Could not look up nearby places right now');
+  }
+
+  /* Rank police first — an exchange zone is the safest option and worth
+   * surfacing above a coffee shop. Then by distance. */
+  const rank = { police: 0, library: 1, cafe: 2 };
+  const spots = elements
+    .filter((e) => e.tags && e.tags.name && Number.isFinite(e.lat) && Number.isFinite(e.lon))
+    .map((e) => ({
+      name: e.tags.name,
+      kind: e.tags.amenity,
+      lat: e.lat,
+      lng: e.lon,
+      distanceMi: Math.round(Geo.distanceMi(lat, lng, e.lat, e.lon) * 10) / 10
+    }))
+    .sort((a, b) => (rank[a.kind] - rank[b.kind]) || (a.distanceMi - b.distanceMi))
+    .slice(0, 12);
+
+  await cacheRef.set({
+    spots,
+    fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
+    /* OSM data is refreshable; let the cache self-expire so stale venues age out. */
+    expireAt: admin.firestore.Timestamp.fromMillis(Date.now() + 60 * 86400000)
+  });
+
+  return { spots, cached: false };
+});
+
 /* ---- shared -------------------------------------------------------------- */
 
 function requireAuth(req) {
