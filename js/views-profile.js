@@ -220,6 +220,15 @@ window.ProfileView = (function () {
           '</div>' +
         '</section>' +
 
+        (Store.isStaff()
+          ? '<section class="block">' +
+              '<h2>Moderation</h2>' +
+              '<p class="fine">You have the <strong>' + U.esc(Store.role()) +
+                '</strong> role. Reports are readable by staff only.</p>' +
+              '<a class="btn ghost" href="#/admin">Open the console</a>' +
+            '</section>'
+          : '') +
+
         '<section class="block">' +
           '<h2>Account</h2>' +
           '<button class="btn ghost" id="s-out">Sign out</button>' +

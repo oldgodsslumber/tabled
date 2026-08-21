@@ -32,7 +32,11 @@ window.App = (function () {
     thread:   { render: function (root, p) { ThreadView.render(root, p); }, nav: 'inbox', auth: true },
     profile:  { render: function (root, p) { ProfileView.render(root, p); } },
     me:       { render: function (root, p) { ProfileView.render(root, {}); }, nav: 'me', auth: true },
-    settings: { render: function (root, p) { ProfileView.settings(root); }, auth: true }
+    settings: { render: function (root, p) { ProfileView.settings(root); }, auth: true },
+    /* Not in the nav — reachable from settings, and only rendered when the
+     * role claim is present. That is presentation; the rules and the callable
+     * are what actually gate it. */
+    admin:    { render: function (root, p) { AdminView.render(root, p); }, auth: true }
   };
 
   /* '#/listing/abc123?sort=hot' -> { route:'listing', id:'abc123', sort:'hot' } */
@@ -208,8 +212,16 @@ window.App = (function () {
     BGG.attach(null);
     authApi = {
       signIn: function () {
-        /* A stable fake uid so demo listings survive a reload. */
-        setUser({ uid: 'demo_me', displayName: 'You (demo)', photoURL: null });
+        /* A stable fake uid so demo listings survive a reload.
+         * `?role=admin` grants a demo staff role, so the moderation console is
+         * exercisable offline. Demo mode touches nothing but localStorage, so
+         * this grants no real permission whatsoever — the live app reads the
+         * role from a signed ID token claim and nowhere else. */
+        var m = /[?&]role=(admin|moderator)/.exec(location.search);
+        setUser({
+          uid: 'demo_me', displayName: 'You (demo)', photoURL: null,
+          role: m ? m[1] : null
+        });
         return Promise.resolve();
       },
       signOut: function () { setUser(null); return Promise.resolve(); }

@@ -32,6 +32,7 @@ window.Store = (function () {
   var myUid = null;
   var myProfile = null;
   var blockedSet = Object.create(null);   /* uids I have blocked */
+  var myRole = null;                     /* 'admin' | 'moderator' | null */
   var listeners = [];                     /* fns to call when session changes */
 
   /* ================= Shared shaping ======================================= */
@@ -813,6 +814,54 @@ window.Store = (function () {
         });
       },
 
+      /* ---- Admin console ----
+       * Reads only. Every mutation goes through the adminAction callable, so
+       * there is exactly one implementation of each moderation decision and
+       * exactly one place the audit row gets written. */
+      listOpenReports: function () {
+        return fb.getDocs(fb.query(col('reports'),
+          fb.where('status', '==', 'open'),
+          fb.orderBy('createdAt', 'desc'),
+          fb.limit(200)
+        )).then(function (qs) {
+          var out = [];
+          qs.forEach(function (d) { var r = d.data(); r.id = d.id; out.push(r); });
+          return out;
+        });
+      },
+
+      listFlaggedUsers: function () {
+        return fb.getDocs(fb.query(col('users'),
+          fb.where('openReportCount', '>', 0),
+          fb.orderBy('openReportCount', 'desc'),
+          fb.limit(50)
+        )).then(function (qs) {
+          var out = [];
+          qs.forEach(function (d) { var u = d.data(); u.id = d.id; out.push(u); });
+          return out;
+        }).catch(function (err) {
+          console.warn('[tabled] flagged users read failed', err);
+          return [];
+        });
+      },
+
+      listAdminActions: function () {
+        return fb.getDocs(fb.query(col('adminActions'),
+          fb.orderBy('createdAt', 'desc'),
+          fb.limit(100)
+        )).then(function (qs) {
+          var out = [];
+          qs.forEach(function (d) { var a = d.data(); a.id = d.id; out.push(a); });
+          return out;
+        }).catch(function (err) {
+          console.warn('[tabled] audit read failed', err);
+          return [];
+        });
+      },
+
+      adminAction: function (payload) { return callable('adminAction', payload); },
+      setUserRole: function (payload) { return callable('setUserRole', payload); },
+
       /* ---- Events (M9) ----
        * Open creation, same trust model as listings: no curated allowlist and
        * no approval step, backed by the existing report mechanism. Otherwise
@@ -880,6 +929,7 @@ window.Store = (function () {
           parsed.slots = parsed.slots || {};
           parsed.reviews = parsed.reviews || {};
           parsed.events = parsed.events || {};
+          parsed.adminActions = parsed.adminActions || [];
           return parsed;
         }
       } catch (e) { /* fall through to seed */ }
@@ -977,7 +1027,7 @@ window.Store = (function () {
 
       return {
         users: users, games: games, listings: listings, entries: entries,
-        blocked: {}, reports: {}, requests: [], messages: {}, slots: {}, reviews: {}, events: {}
+        blocked: {}, reports: {}, requests: [], messages: {}, slots: {}, reviews: {}, events: {}, adminActions: []
       };
     }
 
@@ -1632,6 +1682,147 @@ window.Store = (function () {
           }));
       },
 
+      /* ---- Admin console, demo edition ----
+       * Mirrors the callable closely enough that the console's behaviour —
+       * including who may do what — is genuinely exercisable offline. */
+      listOpenReports: function () {
+        return Promise.resolve(Object.keys(db.reports || {})
+          .map(function (k) { var r = clone(db.reports[k]); r.id = k; return r; })
+          .filter(function (r) { return (r.status || 'open') === 'open'; })
+          .sort(function (a, b) { return (b.createdAt || 0) - (a.createdAt || 0); }));
+      },
+      listFlaggedUsers: function () {
+        return Promise.resolve(Object.keys(db.users)
+          .map(function (k) { return clone(db.users[k]); })
+          .filter(function (u) { return (u.openReportCount || 0) > 0; })
+          .sort(function (a, b) { return (b.openReportCount || 0) - (a.openReportCount || 0); }));
+      },
+      listAdminActions: function () {
+        return Promise.resolve((db.adminActions || [])
+          .slice().sort(function (a, b) { return (b.createdAt || 0) - (a.createdAt || 0); }));
+      },
+
+      adminAction: function (payload) {
+        var role = Store.role();
+        if (role !== 'admin' && role !== 'moderator') {
+          return Promise.reject(new Error('Staff only'));
+        }
+        var MOD_OK = ['dismissReports', 'hideListing', 'unhideListing'];
+        if (role !== 'admin' && MOD_OK.indexOf(payload.action) === -1) {
+          return Promise.reject(new Error('That action is admin-only'));
+        }
+
+        var targetType = payload.targetType || 'listing';
+        var result = {};
+        var now = Date.now();
+
+        function resolveReports(tt, tid) {
+          var n = 0;
+          Object.keys(db.reports || {}).forEach(function (k) {
+            var r = db.reports[k];
+            if (r.targetType === tt && r.targetId === tid && (r.status || 'open') === 'open') {
+              r.status = 'reviewed';
+              r.reviewedBy = myUid;
+              r.reviewedAt = now;
+              n++;
+            }
+          });
+          return n;
+        }
+        function recount(tt, tid) {
+          var n = Object.keys(db.reports || {}).filter(function (k) {
+            var r = db.reports[k];
+            return r.targetType === tt && r.targetId === tid && (r.status || 'open') === 'open';
+          }).length;
+          if (tt === 'user' && db.users[tid]) db.users[tid].openReportCount = n;
+          if (tt === 'listing') {
+            var l = db.listings.filter(function (x) { return x.id === tid; })[0];
+            if (l) l.openReportCount = n;
+          }
+          return n;
+        }
+
+        var a = payload.action;
+        if (a === 'dismissReports') {
+          result.resolved = resolveReports(targetType, payload.targetId);
+          recount(targetType, payload.targetId);
+        } else if (a === 'hideListing' || a === 'unhideListing') {
+          var l2 = db.listings.filter(function (x) { return x.id === payload.targetId; })[0];
+          if (!l2) return Promise.reject(new Error('No such listing'));
+          l2.status = a === 'hideListing' ? 'hidden' : 'active';
+          result.resolved = resolveReports('listing', payload.targetId);
+          recount('listing', payload.targetId);
+          result.status = l2.status;
+        } else if (a === 'deleteListing') {
+          db.listings = db.listings.filter(function (x) { return x.id !== payload.targetId; });
+          delete db.entries[payload.targetId];
+          resolveReports('listing', payload.targetId);
+        } else if (a === 'restrictUser' || a === 'unrestrictUser') {
+          targetType = 'user';
+          if (payload.targetId === myUid) {
+            return Promise.reject(new Error("You can't restrict yourself"));
+          }
+          if (db.users[payload.targetId]) {
+            db.users[payload.targetId].restricted = a === 'restrictUser';
+          }
+          result.resolved = resolveReports('user', payload.targetId);
+          recount('user', payload.targetId);
+        } else if (a === 'grantVip') {
+          targetType = 'user';
+          var u = db.users[payload.targetId];
+          if (!u) return Promise.reject(new Error('No such user'));
+          u.vip = true;
+          u.vipUntil = (payload.until && payload.until > now) ? payload.until : null;
+          u.vipGrantedAt = now;
+          u.vipGrantedBy = myUid;
+          u.vipReason = payload.reason || '';
+          /* Retroactive, as the callable is — otherwise a fresh VIP keeps a
+           * dark badge because of an old unpaid trade. */
+          var settled = 0;
+          db.requests.forEach(function (r) {
+            if (r.sellerId === payload.targetId && r.status === 'completed' && r.feePaid === false) {
+              r.feePaid = true; r.feeSettledBy = 'vip'; settled++;
+            }
+          });
+          u.verifiedSeller = !db.requests.some(function (r) {
+            return r.sellerId === payload.targetId && r.status === 'completed' && r.feePaid === false;
+          });
+          result.settledFees = settled;
+          result.vipUntil = u.vipUntil;
+        } else if (a === 'revokeVip') {
+          targetType = 'user';
+          var u2 = db.users[payload.targetId];
+          if (u2) { u2.vip = false; u2.vipUntil = null; }
+          result.retroactive = false;
+        } else {
+          return Promise.reject(new Error('Unknown action'));
+        }
+
+        db.adminActions = db.adminActions || [];
+        db.adminActions.push({
+          id: U.uid('aa_'), action: a, targetType: targetType,
+          targetId: payload.targetId, reason: payload.reason || '',
+          actorUid: myUid, actorName: (myProfile && myProfile.displayName) || 'staff',
+          actorRole: role, result: result, createdAt: now
+        });
+        save();
+        return Promise.resolve(Object.assign({ ok: true, action: a }, result));
+      },
+
+      setUserRole: function (payload) {
+        if (Store.role() !== 'admin') return Promise.reject(new Error('This action is admin-only'));
+        if (db.users[payload.uid]) db.users[payload.uid].staffRole = payload.role || null;
+        db.adminActions = db.adminActions || [];
+        db.adminActions.push({
+          id: U.uid('aa_'), action: 'setUserRole', targetType: 'user',
+          targetId: payload.uid, reason: payload.reason || '',
+          actorUid: myUid, actorName: (myProfile && myProfile.displayName) || 'admin',
+          actorRole: 'admin', result: { role: payload.role || null }, createdAt: Date.now()
+        });
+        save();
+        return Promise.resolve({ ok: true, role: payload.role || null, tokenRefreshRequired: true });
+      },
+
       /* Demo mode has no Stripe. Settling directly is honest here precisely
        * because it is obviously fake — there is no card, no session, and the
        * banner says so. It exercises the badge recompute, which is the part
@@ -1728,6 +1919,11 @@ window.Store = (function () {
    * after boot is already complete rather than three staggered repaints. */
   function startSession(authUser) {
     myUid = authUser.uid;
+    /* Comes from the ID token's custom claim, refreshed on boot. Used ONLY to
+     * decide what to render — every actual permission is re-checked server
+     * side, because a client-side role check decides what a button looks like,
+     * never what it is allowed to do. */
+    myRole = authUser.role || null;
     return backend.ensureProfile(authUser)
       .then(function (profile) {
         myProfile = profile;
@@ -1747,6 +1943,7 @@ window.Store = (function () {
     myRequests = [];
     myUid = null;
     myProfile = null;
+    myRole = null;
     blockedSet = Object.create(null);
     notify();
   }
@@ -1764,6 +1961,11 @@ window.Store = (function () {
     me: function () { return myProfile; },
     setMe: function (p) { myProfile = p; notify(); },
     isMe: function (uid) { return !!myUid && myUid === uid; },
+
+    /* Cosmetic only. Decides which controls render; never what is permitted. */
+    role: function () { return myRole; },
+    isStaff: function () { return myRole === 'admin' || myRole === 'moderator'; },
+    isAdmin: function () { return myRole === 'admin'; },
 
     /* ---- blocking (kept in memory; the feed filters against it on every
      * query, so it has to be synchronous) ---- */
@@ -1848,6 +2050,13 @@ window.Store = (function () {
     /* ---- completion & reviews (M7) ---- */
     confirmSold: function (requestId) { return backend.confirmSold(requestId); },
     startFeeCheckout: function (requestId) { return backend.startFeeCheckout(requestId); },
+
+    /* ---- admin console ---- */
+    listOpenReports: function () { return backend.listOpenReports(); },
+    listFlaggedUsers: function () { return backend.listFlaggedUsers(); },
+    listAdminActions: function () { return backend.listAdminActions(); },
+    adminAction: function (p) { return backend.adminAction(p); },
+    setUserRole: function (p) { return backend.setUserRole(p); },
 
     /* ---- events (M9) ---- */
     createEvent: function (e) { return backend.createEvent(e); },

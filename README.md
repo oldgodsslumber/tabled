@@ -5,7 +5,7 @@ the listing and discovery half of what Facebook Marketplace and Reddit do badly
 for this hobby. Built against `board_game_marketplace_spec.md`.
 
 **This build covers M1–M10** — every milestone in both spec documents — plus a
-US-only geo-lock. See
+US-only geo-lock, lots, and a moderation console. See
 [Where this build stops](#where-this-build-stops) for exactly what's in and what
 isn't.
 
@@ -697,6 +697,67 @@ change.
 Nothing is reserved (there's no document to reserve), and per the addendum's open
 question, nothing is recorded against the offerer's history unless the trade
 actually completes.
+
+---
+
+## Admin console
+
+Reachable from settings, at `#/admin`, and only when the role claim is present.
+That is presentation; `firestore.rules` and the `adminAction` callable are what
+actually gate it.
+
+**Two roles, one flag each.** Moderators triage content — dismiss reports, hide
+and un-hide listings. Admins additionally restrict accounts, delete listings,
+grant VIP and assign roles. The split is that moderators handle *content* while
+admins make decisions that touch a person's account or cost money.
+
+**Every mutation goes through one callable.** Rules grant staff *read* access
+and nothing more. Granting write access there would open a second path to
+exactly the fields (`restricted`, `status`, `vip`) that the function-only
+invariant exists to protect — and a second path is one nobody remembers to keep
+in step. One callable also means one place the audit row gets written.
+
+**The queue groups by target, not by report.** Three people reporting one
+listing is one decision, and seeing the three reasons together is what
+distinguishes a real problem from one person with a grudge and two friends.
+
+**Every action resolves the target's open reports.** This is what makes
+un-hiding work at all: the auto-hide breaker counts reports with status `open`,
+so clearing a listing without resolving them leaves the count at three and the
+next report silently undoes the human decision. There's a test for exactly that.
+
+**Roles live in a custom claim, not a Firestore field**, so rules read them from
+the token with no document read per evaluation. The cost: a claim granted after
+sign-in isn't in the existing token, and Firebase only refreshes hourly — so a
+newly-promoted admin would get permission-denied for up to an hour, looking
+exactly like a broken build. `firebase-config.js` forces `getIdTokenResult(true)`
+on boot to close that gap.
+
+### Bootstrapping the first admin
+
+`setUserRole` is admin-only, which leaves an obvious chicken-and-egg problem.
+`functions/scripts/grant-role.js` closes it from a machine holding a
+service-account key:
+
+```sh
+cd functions
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json   node scripts/grant-role.js you@example.com admin
+```
+
+Deliberately a local script rather than a deployed callable: a "make me an
+admin" endpoint is a permanent privilege-escalation surface for a one-time
+action. **Delete the service-account key afterwards** — it is the whole project.
+
+### VIP
+
+Granted from the console's user tab, admin-only, and **invisible** — a VIP
+simply never sees a fee prompt and nothing on their public profile marks them
+out. `vipUntil` is null for forever or a date for comped-until.
+
+Granting **settles outstanding fees retroactively**, otherwise a new VIP keeps a
+dark badge because of last week's unpaid trade and the grant looks broken.
+Revoking is **not** retroactive, on the same principle as the launch waiver:
+clawing back would darken a badge over history the person can no longer act on.
 
 ---
 

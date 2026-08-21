@@ -74,6 +74,27 @@ service cloud.firestore {
       return usPoint(data.get('geoPoint', null)) && usCountry(data.get('countryCode', null));
     }
 
+    // ---- Staff -------------------------------------------------------------
+    // Roles live in a custom claim rather than a Firestore field, so these
+    // checks read the token and cost no document read per evaluation.
+    //
+    // Staff get READ access here and nothing more. Every mutation goes through
+    // the adminAction callable, which uses the admin SDK and bypasses these
+    // rules entirely. That is on purpose: granting write access here would open
+    // a second path to exactly the fields (restricted, status, vip) that the
+    // function-only invariant exists to protect, and a second path is one
+    // nobody remembers to keep in step.
+    function staffRole() {
+      return request.auth != null && request.auth.token != null
+        ? request.auth.token.get('role', '') : '';
+    }
+    function isStaff() {
+      return staffRole() == 'admin' || staffRole() == 'moderator';
+    }
+    function isAdmin() {
+      return staffRole() == 'admin';
+    }
+
     // A restricted account (5+ open reports) can still browse and still read
     // everything it could before -- it just can't create anything new.
     function notRestricted() {
@@ -95,12 +116,19 @@ service cloud.firestore {
         && request.resource.data.avgRating == null
         && request.resource.data.get('restricted', false) == false
         && request.resource.data.get('openReportCount', 0) == 0
+        && request.resource.data.get('vip', false) == false
+        && request.resource.data.get('staffRole', null) == null
         && geoOk(request.resource.data);
 
       allow update: if isUser(uid)
         && !changed([
              'tradeCount', 'avgRating', 'reviewCount', 'verifiedSeller',
-             'openReportCount', 'restricted'
+             'openReportCount', 'restricted',
+             // VIP is a billing entitlement and staffRole is an authorization
+             // mirror. Either one writable by its owner would be the same
+             // mistake as a self-settable verifiedSeller.
+             'vip', 'vipUntil', 'vipGrantedAt', 'vipGrantedBy', 'vipReason',
+             'staffRole'
            ])
         && geoOk(request.resource.data);
 
@@ -138,7 +166,8 @@ service cloud.firestore {
       // owner, so a seller can see what got flagged instead of finding it
       // silently gone.
       allow read: if resource.data.status == 'active'
-        || (signedIn() && resource.data.sellerId == request.auth.uid);
+        || (signedIn() && resource.data.sellerId == request.auth.uid)
+        || isStaff();
 
       allow create: if isUser(request.resource.data.sellerId)
         && notRestricted()
@@ -215,7 +244,24 @@ service cloud.firestore {
         && request.resource.data.targetId is string
         && request.resource.data.reason is string;
 
-      allow read, update, delete: if false;
+      // Staff can read; everyone else, including the report's own author,
+      // cannot. A readable report collection tells a bad actor exactly how
+      // close they are to a threshold.
+      //
+      // Resolution is still a function write only — a moderator marking a
+      // report reviewed also has to recount and possibly un-hide, and those
+      // must happen together or not at all.
+      allow read: if isStaff();
+      allow update, delete: if false;
+    }
+
+    // ---- adminActions (audit trail) ----
+
+    match /adminActions/{actionId} {
+      // Readable by staff so the console can show who did what. Written only
+      // by the adminAction callable — an editable audit log is not one.
+      allow read: if isStaff();
+      allow write: if false;
     }
 
     // ---- config ----

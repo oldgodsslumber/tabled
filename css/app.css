@@ -1048,6 +1048,71 @@ select {
 .lot-contents .fine { display: inline; margin: 0; }
 .lot-contents > .fine { display: block; margin-top: .4rem; }
 
+/* ---- Admin console ------------------------------------------------------- */
+
+.admin { display: grid; gap: 1rem; }
+.admin-head { display: flex; align-items: center; gap: .6rem; }
+.admin-head h1 { margin: 0; }
+.admin-tabs { overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.admin-tabs::-webkit-scrollbar { display: none; }
+
+.report-group {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: .85rem;
+  margin-bottom: .85rem;
+  box-shadow: var(--shadow);
+}
+.rg-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-bottom: .6rem; }
+.rg-head .fine { margin: 0; }
+
+.rg-preview { margin-bottom: .6rem; }
+.rg-target {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .5rem .7rem;
+  background: var(--navy-050);
+  border-radius: var(--r-sm);
+  text-decoration: none;
+  color: inherit;
+}
+.rg-target .grow { display: flex; flex-direction: column; min-width: 0; }
+.rg-target .fine { margin: 0; }
+.rg-target .chev { color: var(--muted); font-size: 1.3rem; }
+
+.rg-reasons { margin: 0 0 .7rem; padding-left: 1.1rem; font-size: .9rem; }
+.rg-reasons li { margin-bottom: .25rem; }
+.rg-reasons .fine { display: inline; margin: 0; }
+
+.rg-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+
+.admin-row {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .65rem 0;
+  border-top: 1px solid var(--line-soft);
+}
+.admin-row:first-child { border-top: 0; }
+.admin-row .grow { display: flex; flex-direction: column; min-width: 0; }
+.admin-row .fine { margin: 0; }
+
+.audit { display: grid; }
+.audit-row {
+  display: flex;
+  align-items: flex-start;
+  gap: .6rem;
+  padding: .6rem 0;
+  border-top: 1px solid var(--line-soft);
+  font-size: .9rem;
+}
+.audit-row:first-child { border-top: 0; }
+.audit-reason { color: var(--muted); font-size: .85rem; margin-top: .15rem; }
+.audit-who { display: flex; flex-direction: column; align-items: flex-end; flex: none; }
+.audit-who .fine { margin: 0; }
+
 /* ---- Overflow menu ------------------------------------------------------- */
 
 .overflow { position: relative; flex: none; }

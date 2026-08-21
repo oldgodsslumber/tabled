@@ -1576,6 +1576,294 @@ exports.stripeWebhook = onRequest(
   }
 );
 
+/* =========================================================================
+ * Admin console — roles, moderation actions, audit trail
+ *
+ * ONE callable performs every mutation. That is deliberate and structural.
+ *
+ * The invariant this codebase has held since M1 is that denormalized and
+ * consequential fields are function-only — not writable even by the owner of
+ * the document they sit on. Granting staff direct write access through rules
+ * would open a second path to exactly the fields that invariant protects
+ * (`restricted`, `status`, `vip`), and a second path is one nobody remembers
+ * to keep in step.
+ *
+ * So rules grant staff only READ access, every change comes through here, and
+ * every change writes an audit row in the same operation. Moderation without a
+ * trail is how a mistake becomes unexplainable six weeks later.
+ *
+ * Roles live in a custom claim, not a Firestore field, so `firestore.rules`
+ * can check them from the token without a document read on every evaluation.
+ * The cost of that choice: a freshly-granted role does not take effect until
+ * the client's ID token refreshes. See setUserRole below.
+ * ========================================================================= */
+
+function callerRole(req) {
+  return (req.auth && req.auth.token && req.auth.token.role) || null;
+}
+function requireStaff(req) {
+  requireAuth(req);
+  const role = callerRole(req);
+  if (role !== 'admin' && role !== 'moderator') {
+    throw new HttpsError('permission-denied', 'Staff only');
+  }
+  return role;
+}
+function requireAdmin(req) {
+  requireAuth(req);
+  if (callerRole(req) !== 'admin') {
+    throw new HttpsError('permission-denied', 'This action is admin-only');
+  }
+  return 'admin';
+}
+
+/* Actions a moderator may take. Anything absent here is admin-only.
+ *
+ * The split is deliberate: moderators triage content, admins make decisions
+ * that touch a person's account or cost money. */
+const MODERATOR_ACTIONS = ['dismissReports', 'hideListing', 'unhideListing'];
+
+const ALL_ACTIONS = MODERATOR_ACTIONS.concat([
+  'deleteListing', 'restrictUser', 'unrestrictUser', 'grantVip', 'revokeVip'
+]);
+
+/* Resolving reports is what makes un-hiding actually work.
+ *
+ * The auto-hide breaker counts reports with status 'open'. If a moderator
+ * clears a listing without resolving them, the count stays at three and the
+ * very next report re-hides it — the human decision silently undone. So every
+ * action that settles a target closes its open reports too. */
+async function resolveOpenReports(targetType, targetId, actorUid) {
+  const open = await db.collection('reports')
+    .where('targetType', '==', targetType)
+    .where('targetId', '==', targetId)
+    .where('status', '==', 'open')
+    .limit(200).get();
+
+  if (open.empty) return 0;
+
+  const batch = db.batch();
+  open.docs.forEach((doc) => {
+    batch.update(doc.ref, {
+      status: 'reviewed',
+      reviewedBy: actorUid,
+      reviewedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+  });
+  await batch.commit();
+  return open.size;
+}
+
+async function writeAudit(entry) {
+  await db.collection('adminActions').add(Object.assign({
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  }, entry));
+}
+
+exports.adminAction = onCall(async (req) => {
+  const role = requireStaff(req);
+  const uid = req.auth.uid;
+  const d = req.data || {};
+  const action = String(d.action || '');
+  const targetId = String(d.targetId || '');
+  const reason = String(d.reason || '').slice(0, 500);
+
+  if (ALL_ACTIONS.indexOf(action) === -1) {
+    throw new HttpsError('invalid-argument', 'Unknown action');
+  }
+  if (role !== 'admin' && MODERATOR_ACTIONS.indexOf(action) === -1) {
+    throw new HttpsError('permission-denied', 'That action is admin-only');
+  }
+  if (!targetId) throw new HttpsError('invalid-argument', 'targetId is required');
+
+  const actorName = (req.auth.token && req.auth.token.name) || 'staff';
+  let targetType = 'listing';
+  let result = {};
+
+  switch (action) {
+    /* ---- Content ---- */
+
+    case 'dismissReports': {
+      targetType = String(d.targetType || 'listing');
+      const n = await resolveOpenReports(targetType, targetId, uid);
+      await recountReports(targetType, targetId);
+      result = { resolved: n };
+      break;
+    }
+
+    case 'hideListing':
+    case 'unhideListing': {
+      const ref = db.collection('listings').doc(targetId);
+      const snap = await ref.get();
+      if (!snap.exists) throw new HttpsError('not-found', 'No such listing');
+      await ref.update({ status: action === 'hideListing' ? 'hidden' : 'active' });
+      const n = await resolveOpenReports('listing', targetId, uid);
+      await recountReports('listing', targetId);
+      result = { resolved: n, status: action === 'hideListing' ? 'hidden' : 'active' };
+      break;
+    }
+
+    case 'deleteListing': {
+      /* Entries first: deleting the parent orphans the subcollection, which
+       * stays billable and unreachable. Firestore has no cascade. */
+      const entries = await db.collection('listings').doc(targetId)
+        .collection('gameEntries').get();
+      const batch = db.batch();
+      entries.docs.forEach((doc) => batch.delete(doc.ref));
+      batch.delete(db.collection('listings').doc(targetId));
+      await batch.commit();
+      await resolveOpenReports('listing', targetId, uid);
+      result = { deletedEntries: entries.size };
+      break;
+    }
+
+    /* ---- Accounts ---- */
+
+    case 'restrictUser':
+    case 'unrestrictUser': {
+      targetType = 'user';
+      if (targetId === uid) {
+        throw new HttpsError('failed-precondition', "You can't restrict yourself");
+      }
+      await db.collection('users').doc(targetId)
+        .update({ restricted: action === 'restrictUser' });
+      const n = await resolveOpenReports('user', targetId, uid);
+      await recountReports('user', targetId);
+      result = { resolved: n, restricted: action === 'restrictUser' };
+      break;
+    }
+
+    /* ---- VIP ----
+     * A billing decision rather than a moderation one, hence admin-only.
+     * Invisible by design: a VIP simply never sees a fee prompt, and nothing
+     * on their public profile marks them out. */
+    case 'grantVip': {
+      targetType = 'user';
+      /* null means forever. A date means comped-until. */
+      const untilMs = Number(d.until);
+      const vipUntil = Number.isFinite(untilMs) && untilMs > Date.now()
+        ? admin.firestore.Timestamp.fromMillis(untilMs)
+        : null;
+
+      await db.collection('users').doc(targetId).update({
+        vip: true,
+        vipUntil,
+        vipGrantedAt: admin.firestore.FieldValue.serverTimestamp(),
+        vipGrantedBy: uid,
+        vipReason: reason
+      });
+
+      /* Retroactive, deliberately. Without this a newly-made VIP keeps a dark
+       * badge because of last week's unpaid trade, which reads as the grant
+       * not having worked. */
+      const settled = await settleOutstandingFees(targetId);
+      await recomputeVerified(targetId);
+      result = { vipUntil: vipUntil ? vipUntil.toMillis() : null, settledFees: settled };
+      break;
+    }
+
+    case 'revokeVip': {
+      targetType = 'user';
+      await db.collection('users').doc(targetId).update({
+        vip: false,
+        vipUntil: null
+      });
+      /* NOT retroactive, same principle as the launch waiver. Already-settled
+       * trades stay settled — clawing back would darken a badge over history
+       * the person can no longer act on. */
+      result = { retroactive: false };
+      break;
+    }
+  }
+
+  await writeAudit({
+    action, targetType, targetId, reason,
+    actorUid: uid, actorName, actorRole: role,
+    result
+  });
+
+  return Object.assign({ ok: true, action }, result);
+});
+
+/* openReportCount is denormalized onto the target so the console can sort by
+ * it without an aggregation per row. Recomputed from the collection rather
+ * than decremented — a decrement drifts the first time anything is retried. */
+async function recountReports(targetType, targetId) {
+  const n = (await db.collection('reports')
+    .where('targetType', '==', targetType)
+    .where('targetId', '==', targetId)
+    .where('status', '==', 'open')
+    .count().get()).data().count;
+
+  const ref = targetType === 'user'
+    ? db.collection('users').doc(targetId)
+    : db.collection('listings').doc(targetId);
+  await ref.set({ openReportCount: n }, { merge: true }).catch(() => {});
+  return n;
+}
+
+/* Mark a VIP's outstanding verification fees as settled by the grant. */
+async function settleOutstandingFees(sellerId) {
+  const unpaid = await db.collection('requests')
+    .where('sellerId', '==', sellerId)
+    .where('status', '==', 'completed')
+    .where('feePaid', '==', false)
+    .limit(300).get();
+
+  if (unpaid.empty) return 0;
+  const batch = db.batch();
+  unpaid.docs.forEach((doc) => {
+    batch.update(doc.ref, { feePaid: true, feeSettledBy: 'vip' });
+  });
+  await batch.commit();
+  return unpaid.size;
+}
+
+/* ---- setUserRole ---------------------------------------------------------
+ * Admin-only. Writes a custom claim, which is what firestore.rules reads.
+ *
+ * THE GOTCHA: custom claims live in the ID token, and an existing token does
+ * not carry a claim granted after it was issued. Firebase refreshes tokens
+ * roughly hourly, so without a forced refresh a newly-promoted admin gets
+ * permission-denied from rules for up to an hour — which looks exactly like a
+ * broken build. The client must call getIdToken(true) after this returns, and
+ * the console tells the granting admin to have them reload. */
+exports.setUserRole = onCall(async (req) => {
+  requireAdmin(req);
+  const uid = String((req.data || {}).uid || '');
+  const role = (req.data || {}).role;
+
+  if (!uid) throw new HttpsError('invalid-argument', 'uid is required');
+  if (role !== null && role !== 'admin' && role !== 'moderator') {
+    throw new HttpsError('invalid-argument', "role must be 'admin', 'moderator' or null");
+  }
+  if (uid === req.auth.uid && role !== 'admin') {
+    /* Locking yourself out is recoverable only by running the bootstrap script
+     * again with a service-account key. Refuse rather than allow it by
+     * accident. */
+    throw new HttpsError('failed-precondition',
+      "You can't remove your own admin role from here");
+  }
+
+  await admin.auth().setCustomUserClaims(uid, role ? { role } : {});
+  /* Mirrored onto the user doc purely so the console can list staff. The claim
+   * is what rules trust; this copy is display only and must never be read as
+   * an authorization decision. */
+  await db.collection('users').doc(uid)
+    .set({ staffRole: role || null }, { merge: true });
+
+  await writeAudit({
+    action: 'setUserRole', targetType: 'user', targetId: uid,
+    reason: String((req.data || {}).reason || '').slice(0, 500),
+    actorUid: req.auth.uid,
+    actorName: (req.auth.token && req.auth.token.name) || 'admin',
+    actorRole: 'admin',
+    result: { role: role || null }
+  });
+
+  return { ok: true, role: role || null, tokenRefreshRequired: true };
+});
+
 /* ---- shared -------------------------------------------------------------- */
 
 function requireAuth(req) {

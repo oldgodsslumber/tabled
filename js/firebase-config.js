@@ -105,14 +105,33 @@ if (!configured) {
       signOut: () => fbSignOut(auth)
     });
 
-    onAuthStateChanged(auth, (user) => {
-      App.setUser(user ? {
+    onAuthStateChanged(auth, async (user) => {
+      if (!user) { App.setUser(null); return; }
+
+      /* Force a token refresh so a role granted since the last sign-in is
+       * actually present. Custom claims only reach the client when the ID
+       * token is reissued, and Firebase does that roughly hourly on its own —
+       * so without this, a newly-promoted admin gets permission-denied from
+       * the rules for up to an hour, which looks exactly like a broken build.
+       *
+       * A failure here is non-fatal: fall back to whatever the cached token
+       * says rather than blocking sign-in over a role most users don't have. */
+      let role = null;
+      try {
+        const token = await user.getIdTokenResult(true);
+        role = (token.claims && token.claims.role) || null;
+      } catch (err) {
+        console.warn('[tabled] could not refresh ID token for role claim', err);
+      }
+
+      App.setUser({
         uid: user.uid,
         displayName: user.displayName,
-        photoURL: user.photoURL
+        photoURL: user.photoURL,
+        role
         /* user.email is deliberately not passed through. Nothing downstream
          * should be able to accidentally render it or write it to a doc. */
-      } : null);
+      });
     });
   } catch (err) {
     console.error('[tabled] Firebase failed to initialize', err);

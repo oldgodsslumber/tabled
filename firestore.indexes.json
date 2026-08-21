@@ -367,6 +367,21 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "//": "Admin: users sorted by open reports",
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "openReportCount",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
