@@ -272,9 +272,7 @@ window.AdminView = (function () {
     if (a === 'deleteListing') return 'Listing deleted';
     if (a === 'restrictUser') return 'Account restricted';
     if (a === 'unrestrictUser') return 'Restriction lifted';
-    if (a === 'grantVip') {
-      return 'VIP granted' + (res.settledFees ? ', ' + U.plural(res.settledFees, 'fee') + ' settled' : '');
-    }
+    if (a === 'grantVip') return 'VIP granted';
     if (a === 'revokeVip') return 'VIP revoked';
     return 'Done';
   }
@@ -324,15 +322,14 @@ window.AdminView = (function () {
    * fee prompt, and nothing on their public profile marks them out. */
   function grantVip(uid) {
     var m = U.modal('Grant VIP',
-      '<p class="modal-msg">They stop paying verification fees and keep the Verified ' +
-        'badge. Nobody else can tell — there is no public marker.</p>' +
+      '<p class="modal-msg">A supporter/founder flag. It grants nothing automatic ' +
+        'right now — a hook for recognition later. Nobody else can see it.</p>' +
       '<label class="field"><span>Until <em>blank means forever</em></span>' +
         '<input id="vip-until" type="date"></label>' +
       '<label class="field"><span>Reason</span>' +
         '<input id="vip-reason" type="text" maxlength="200" ' +
           'placeholder="Founding member"></label>' +
-      '<p class="fine">Any unpaid fees they already owe are settled by this. ' +
-        'Revoking later is not retroactive — settled trades stay settled.</p>' +
+
       '<div class="modal-actions">' +
         '<button class="btn ghost" data-act="cancel">Cancel</button>' +
         '<button class="btn" data-act="go">Grant</button>' +

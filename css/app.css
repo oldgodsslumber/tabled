@@ -915,12 +915,6 @@ select {
 .star:active { transform: scale(.9); }
 .rate-hint { text-align: center; min-height: 1.2em; margin-top: 0; font-weight: 600; }
 
-/* ---- Verification fee prompt (M8) ---------------------------------------- */
-
-.fee-prompt { border-color: var(--navy); }
-.fee-prompt .dash-row { border-top-color: var(--line-soft); align-items: center; }
-.fee-prompt h2 { color: var(--navy); }
-
 /* ---- Events (M9) --------------------------------------------------------- */
 
 .event-banner {

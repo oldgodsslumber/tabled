@@ -50,10 +50,7 @@ window.ProfileView = (function () {
           U.avatar(user, 'xl') +
           '<div class="grow">' +
             '<h1>' + U.esc(user.displayName || 'Board gamer') +
-              (user.verifiedSeller
-                ? ' <span class="badge verified" title="Every completed trade has its ' +
-                  'verification fee settled">Verified</span>'
-                : '') +
+
             '</h1>' +
             '<p class="fine">' +
               (user.generalArea ? U.esc(user.generalArea) + ' · ' : '') +

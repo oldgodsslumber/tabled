@@ -68,7 +68,7 @@ What actually protects the project is `firestore.rules`, `storage.rules` and
 Google Auth. Those are deployed and verified: an unauthenticated write to
 `users/` or `games/` returns `PERMISSION_DENIED` today.
 
-The keys that *are* credentials — geocoding, and Stripe at M8 — live in Cloud
+The keys that *are* credentials — geocoding — live in Cloud
 Functions Secret Manager and never touch this repo. `.gitignore` carries
 service-account patterns as a backstop.
 
@@ -146,38 +146,6 @@ and a Firestore-trigger function caught mid-creation can land as an HTTPS
 function instead. Those can't be converted in place — the fix is
 `firebase functions:delete <name> --region us-central1` and redeploy.
 
-### 5b. Stripe — needed before the fee waiver ends
-
-Three secrets in total. All three currently hold the sentinel
-`PLACEHOLDER_SET_A_REAL_KEY`, which exists so the codebase deploys: `defineSecret`
-refuses to deploy *anything* if a referenced secret is absent, so one
-unconfigured integration would otherwise block all fifteen functions. Each
-function checks for the sentinel and fails with a clear message rather than
-sending a fake key upstream.
-
-```sh
-# Geocoding — enable the Geocoding API in Google Cloud Console, create a key,
-# restrict it to that API.
-firebase functions:secrets:set GEOCODING_API_KEY
-
-# Stripe — dashboard.stripe.com → Developers → API keys
-firebase functions:secrets:set STRIPE_SECRET_KEY
-
-# Stripe webhook — see below for where this value comes from
-firebase functions:secrets:set STRIPE_WEBHOOK_SECRET
-
-firebase deploy --only functions
-```
-
-**Wiring the webhook.** In the Stripe dashboard → Developers → Webhooks, add an
-endpoint pointing at the deployed `stripeWebhook` URL
-(`firebase functions:list` will show it), subscribed to
-**`checkout.session.completed`**. Stripe then shows a signing secret starting
-`whsec_` — that is the value for `STRIPE_WEBHOOK_SECRET`.
-
-Use Stripe **test mode** keys until you actually want to take money. Test mode
-has its own webhook endpoint and its own signing secret; they are not
-interchangeable with live ones.
 
 ### 6. Hosting — two options
 
@@ -302,7 +270,7 @@ could average the jitter away.
 owner.** `verifiedSeller`, `tradeCount`, `avgRating`, `viewCount`, `hotScore`,
 `openReportCount` and all hold/queue state are blocked by `firestore.rules` even
 for the account they belong to. A blanket "owner can write their own doc" rule
-would let anyone set their own Verified badge.
+would let anyone set their own trust-signal fields.
 
 **Email is never surfaced.** `js/firebase-config.js` doesn't even pass
 `user.email` through to the app, so nothing downstream can render it by
@@ -529,16 +497,6 @@ of every sibling entry, and a transaction that reads a whole subcollection to
 settle one boolean is a contention magnet on a busy listing. Worst case is a
 listing that stays `active` with everything sold for a moment.
 
-### The fee waiver is decided at completion, not at fee time
-
-`confirmSold` reads `config/global.feeWaiverEndDate` and stamps `feePaid` there
-and then. That is what makes the spec's promise true: a trade completed during
-the waiver stays free **forever**, even after the cutoff passes.
-
-A missing config doc is treated as waived. The fee system doesn't exist yet, and
-defaulting to unpaid would strip the Verified badge off every seller the moment
-M8 ships.
-
 ### Reviews
 
 The review itself is a client write — the rules can fully express who may write
@@ -557,49 +515,6 @@ drifts on any retry and can't be repaired without the full set anyway.
 
 **Reviews are immutable and public.** No edit, no delete. An editable review is
 a review that can be traded away during a dispute.
-
----
-
-## Verification fees (M8)
-
-**The fee does not gate the sale.** It cannot — the app has no visibility into
-cash changing hands outside it, so gating on the sale would be unenforceable
-theatre. It gates a status the app *fully* controls: whether a profile shows
-**Verified**.
-
-This is a seller-to-platform charge. The actual game sale — the $30, the $50,
-whatever it goes for — is never touched by the app, never routed through Stripe,
-never processed here. That boundary has not moved since the original spec.
-
-**Badge and count are deliberately separate.** `tradeCount` always reflects every
-completed trade, paid or not, so a profile never looks artificially thin because
-of a fee. `verifiedSeller` is a *current-standing* flag: true only while zero
-completed trades carry an unpaid fee. One unpaid trade turns it off; paying turns
-it back on. It's a status you maintain, not a threshold you cross once — and
-there's a test asserting exactly that.
-
-**Only the signed webhook may mark a fee paid.** `stripeWebhook` is a public
-endpoint, so signature verification *is* the security model — without it anyone
-could POST a fake "payment succeeded" and mint themselves a badge. Two details
-carry that:
-
-- It verifies against **`request.rawBody`**, not the parsed body. Firebase parses
-  JSON by default, and a re-serialised body produces a different signature —
-  which fails in a way that looks like a Stripe bug rather than our own.
-- Nothing above the `constructEvent` call reads the payload.
-
-The handler is idempotent by construction, because Stripe retries: setting a
-boolean that is already true costs nothing. It answers **400** on a bad signature
-so Stripe stops retrying, and **500** on a Firestore failure so Stripe *does* —
-the payment already happened and the badge must eventually reflect it.
-
-**The return URL is validated against an allowlist.** An open redirect here would
-let anyone turn a Tabled checkout link into a phishing hop.
-
-**Charging twice is refused at the callable**, not just hidden in the UI. That
-turned out to matter: a listener-stacking bug in the dashboard fired the pay
-handler twice on one tap, and the server rejected the second attempt exactly as
-designed. The UI bug is fixed; the guard stays.
 
 ---
 
@@ -830,9 +745,6 @@ closed rather than storing plaintext.
   one-tap claiming with deterministic-ID exclusivity, timezone-correct
 - Completion & trust: mutual sold-confirmation, listing archival, trade counts
   for both sides, immutable one-per-trade reviews with denormalized averages
-- Verification fees: Stripe Checkout for the $0.25 per-trade fee, signed
-  webhook, the Verified badge it gates, and the launch waiver that makes it
-  moot until the cutoff
 - Events: open creation, "in person at an event" as a third fulfillment
   option, event-scoped feed, and three-phase hold timing around the con
 - Trade proposals: offer one of your own listings or describe an item, with

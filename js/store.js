@@ -279,7 +279,6 @@ window.Store = (function () {
             tradeCount: 0,
             avgRating: null,
             reviewCount: 0,
-            verifiedSeller: false,
             availabilityWindows: [],
             openReportCount: 0,
             restricted: false
@@ -291,7 +290,7 @@ window.Store = (function () {
       },
 
       /* Only the fields a user is allowed to own. tradeCount / avgRating /
-       * reviewCount / verifiedSeller are absent by design — Firestore rules
+       * reviewCount are absent by design — Firestore rules
        * reject them even from the profile's own owner, so sending them would
        * fail the whole write. */
       saveProfile: function (uid, patch) {
@@ -830,18 +829,6 @@ window.Store = (function () {
         }).catch(function () { return []; });
       },
 
-      /* ---- Verification fee (M8) ----
-       * Returns a Stripe Checkout URL to redirect to. Nothing about payment is
-       * decided here or anywhere else on the client — only the signed webhook
-       * may mark a fee paid. */
-      startFeeCheckout: function (requestId) {
-        return callable('createFeeCheckoutSession', {
-          requestId: requestId,
-          /* Validated server-side against an allowlist. Sent so a local build
-           * returns to localhost rather than production. */
-          returnUrl: location.origin
-        });
-      },
 
       /* ---- Admin console ----
        * Reads only. Every mutation goes through the adminAction callable, so
@@ -992,9 +979,9 @@ window.Store = (function () {
     function seed() {
       var now = Date.now();
       var people = [
-        { id: 'demo_ava',  displayName: 'Ava Delgado', bio: 'Heavy euros and anything with a deck-builder in it.', generalArea: 'Riverside', lat: 30.305, lng: -81.687, tradeCount: 14, avgRating: 4.9, reviewCount: 12, verifiedSeller: true },
-        { id: 'demo_theo', displayName: 'Theo Ranjit', bio: 'Downsizing the shelf. Everything sleeved.', generalArea: 'San Marco', lat: 30.312, lng: -81.651, tradeCount: 6, avgRating: 4.7, reviewCount: 5, verifiedSeller: true },
-        { id: 'demo_nell', displayName: 'Nell Fischer', bio: 'Co-op and legacy games mostly.', generalArea: 'North Jacksonville', lat: 30.407, lng: -81.652, tradeCount: 2, avgRating: 5, reviewCount: 2, verifiedSeller: false }
+        { id: 'demo_ava',  displayName: 'Ava Delgado', bio: 'Heavy euros and anything with a deck-builder in it.', generalArea: 'Riverside', lat: 30.305, lng: -81.687, tradeCount: 14, avgRating: 4.9, reviewCount: 12 },
+        { id: 'demo_theo', displayName: 'Theo Ranjit', bio: 'Downsizing the shelf. Everything sleeved.', generalArea: 'San Marco', lat: 30.312, lng: -81.651, tradeCount: 6, avgRating: 4.7, reviewCount: 5 },
+        { id: 'demo_nell', displayName: 'Nell Fischer', bio: 'Co-op and legacy games mostly.', generalArea: 'North Jacksonville', lat: 30.407, lng: -81.652, tradeCount: 2, avgRating: 5, reviewCount: 2 }
       ];
       var games = {
         '174430': { id: '174430', name: 'Gloomhaven', yearPublished: 2017, imageUrl: null, categories: ['Adventure', 'Exploration', 'Fantasy', 'Fighting'], mechanics: ['Cooperative Game', 'Hand Management', 'Modular Board'], suggestedPrice: 120 },
@@ -1051,7 +1038,7 @@ window.Store = (function () {
           geohash: Geo.encode(p.lat, p.lng, 9), countryCode: 'US', state: 'FL',
           createdAt: now - 90 * 86400000,
           tradeCount: p.tradeCount, avgRating: p.avgRating, reviewCount: p.reviewCount,
-          verifiedSeller: p.verifiedSeller, availabilityWindows: [],
+          availabilityWindows: [],
           openReportCount: 0, restricted: false
         };
       });
@@ -1077,7 +1064,7 @@ window.Store = (function () {
             photoURL: authUser.photoURL || null,
             bio: '', generalArea: '', geoPoint: null, geohash: null,
             createdAt: Date.now(), tradeCount: 0, avgRating: null, reviewCount: 0,
-            verifiedSeller: false, availabilityWindows: [], openReportCount: 0, restricted: false
+            availabilityWindows: [], openReportCount: 0, restricted: false
           };
           save();
         }
@@ -1335,7 +1322,7 @@ window.Store = (function () {
           eventId: listing.eventId || null,
           eventEndDate: listing.eventEndDate || null,
           proposedTime: null, proposedBy: null, scheduledTime: null,
-          method: null, bookedSlotId: null, feePaid: false,
+          method: null, bookedSlotId: null,
           lastMessageAt: null, lastMessageText: '', lastMessageSenderId: null,
           lastReadBuyerAt: null, lastReadSellerAt: null,
           createdAt: now, updatedAt: now
@@ -1698,10 +1685,6 @@ window.Store = (function () {
 
         r.status = 'completed';
         r.completedAt = now;
-        /* No config doc in demo mode, so the waiver is treated as active -
-         * same default the callable uses, and for the same reason. */
-        r.feePaid = true;
-        r.feeWaived = true;
         this.releaseSlotIfDropped(r, true);
 
         var entry = (db.entries[r.listingId] || []).filter(function (e) {
@@ -1908,18 +1891,6 @@ window.Store = (function () {
           u.vipGrantedAt = now;
           u.vipGrantedBy = myUid;
           u.vipReason = payload.reason || '';
-          /* Retroactive, as the callable is — otherwise a fresh VIP keeps a
-           * dark badge because of an old unpaid trade. */
-          var settled = 0;
-          db.requests.forEach(function (r) {
-            if (r.sellerId === payload.targetId && r.status === 'completed' && r.feePaid === false) {
-              r.feePaid = true; r.feeSettledBy = 'vip'; settled++;
-            }
-          });
-          u.verifiedSeller = !db.requests.some(function (r) {
-            return r.sellerId === payload.targetId && r.status === 'completed' && r.feePaid === false;
-          });
-          result.settledFees = settled;
           result.vipUntil = u.vipUntil;
         } else if (a === 'revokeVip') {
           targetType = 'user';
@@ -1955,30 +1926,6 @@ window.Store = (function () {
         return Promise.resolve({ ok: true, role: payload.role || null, tokenRefreshRequired: true });
       },
 
-      /* Demo mode has no Stripe. Settling directly is honest here precisely
-       * because it is obviously fake — there is no card, no session, and the
-       * banner says so. It exercises the badge recompute, which is the part
-       * with actual logic in it. */
-      startFeeCheckout: function (requestId) {
-        var r = find(requestId);
-        if (!r) return Promise.reject(new Error('No such trade'));
-        if (r.sellerId !== myUid) return Promise.reject(new Error('Only the seller pays this fee'));
-        if (r.status !== 'completed') return Promise.reject(new Error('That trade is not complete'));
-        if (r.feePaid) return Promise.reject(new Error('That trade is already settled'));
-
-        r.feePaid = true;
-        r.feePaidAt = Date.now();
-        r.feeAmountCents = CFG.FEE.cents;
-
-        var unpaid = db.requests.filter(function (x) {
-          return x.sellerId === r.sellerId && x.status === 'completed' && x.feePaid === false;
-        });
-        var u = db.users[r.sellerId];
-        if (u) u.verifiedSeller = unpaid.length === 0;
-
-        save();
-        return Promise.resolve({ demo: true });
-      },
 
       /* Stands in for the onSlotHoldChange trigger. */
       releaseSlotIfDropped: function (r, wasHolding) {
@@ -2181,7 +2128,6 @@ window.Store = (function () {
 
     /* ---- completion & reviews (M7) ---- */
     confirmSold: function (requestId) { return backend.confirmSold(requestId); },
-    startFeeCheckout: function (requestId) { return backend.startFeeCheckout(requestId); },
 
     /* ---- meeting address & safe spots ---- */
     releaseMeetingAddress: function (id, addr, ttlMs) { return backend.releaseMeetingAddress(id, addr, ttlMs); },
@@ -2208,14 +2154,6 @@ window.Store = (function () {
     createEvent: function (e) { return backend.createEvent(e); },
     getEvent: function (id) { return backend.getEvent(id); },
     listEvents: function () { return backend.listEvents(); },
-
-    /* Completed trades of mine, as SELLER, that still owe a fee. The buyer
-     * never owes anything, so this is deliberately one-sided. */
-    unpaidFees: function () {
-      return myRequests.filter(function (r) {
-        return r.sellerId === myUid && r.status === 'completed' && r.feePaid === false;
-      });
-    },
     createReview: function (review) { return backend.createReview(review); },
     getReviews: function (revieweeId) { return backend.getReviews(revieweeId); },
     getMyReviewedRequestIds: function () { return backend.getMyReviewedRequestIds(myUid); },

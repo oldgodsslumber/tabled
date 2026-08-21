@@ -2,6 +2,20 @@
 
 Snapshot taken 2026-08-21, after the admin console shipped.
 
+## One thing I couldn't do (needs your hand)
+
+Deleting deployed functions is blocked in auto mode. Tabled is now **free** —
+Stripe is removed from all the code, but the two dead functions are still
+deployed. Delete them (nothing calls them; the webhook was never wired):
+
+```sh
+firebase functions:delete createFeeCheckoutSession stripeWebhook --region us-central1 --force
+firebase functions:secrets:destroy STRIPE_SECRET_KEY
+firebase functions:secrets:destroy STRIPE_WEBHOOK_SECRET
+```
+
+Then a normal `firebase deploy --only functions` to sync the rest.
+
 ## Current state
 
 | | |
@@ -97,7 +111,6 @@ skipped. Without it, an unconfirmed address or a missed archive would persist.
 
 ## Also outstanding, lower priority
 
-- **Stripe keys** — placeholders. Fine until the fee waiver ends 2026-12-31.
 - **Official "Powered by BGG" logo** — currently a text mark. A licence
   condition before going public.
 - **BGG Phases 2 and 4** — version selection and collection import, both blocked

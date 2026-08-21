@@ -786,7 +786,6 @@ exports.createRequest = onCall(async (req) => {
       scheduledTime: null,
       method: null,
       bookedSlotId: null,
-      feePaid: false,
       lastMessageAt: null,
       lastMessageText: '',
       lastMessageSenderId: null,
@@ -1219,21 +1218,9 @@ exports.confirmSold = onCall(async (req) => {
     patch.status = 'completed';
     patch.completedAt = admin.firestore.Timestamp.fromMillis(nowMs);
 
-    /* The launch waiver (M8). During it, completion satisfies the verification
-     * fee outright — no Stripe call, no prompt shown at all. Deciding it HERE
-     * rather than at fee time is what makes the spec's promise true: a trade
-     * completed during the waiver stays free forever, even after the cutoff.
-     *
-     * A missing config doc is treated as waived. The fee system does not exist
-     * yet, and defaulting to unpaid would strip the Verified badge off every
-     * seller the moment M8 ships. */
-    const cfg = await tx.get(db.collection('config').doc('global'));
-    const waiverEnd = cfg.exists && cfg.data().feeWaiverEndDate
-      ? cfg.data().feeWaiverEndDate.toMillis()
-      : Infinity;
-    patch.feePaid = nowMs < waiverEnd;
-    patch.feeWaived = patch.feePaid;
-
+    /* Tabled is free — there is no verification fee. Completion is the whole
+     * event: it counts the trade for both people and unlocks reviews, and
+     * nothing about it is gated on payment. */
     tx.update(requestRef, patch);
 
     const entryRef = db.collection('listings').doc(r.listingId)
@@ -1303,7 +1290,6 @@ exports.confirmSold = onCall(async (req) => {
     await archiveIfAllSold(outcome.listingId);
     /* Both listings can be emptied by one trade. */
     if (outcome.offeredListingId) await archiveIfAllSold(outcome.offeredListingId);
-    await recomputeVerified(outcome.sellerId);
   }
 
   return outcome;
@@ -1323,20 +1309,6 @@ async function archiveIfAllSold(listingId) {
   console.log('listing ' + listingId + ' archived - every game sold');
 }
 
-/* verifiedSeller is a CURRENT-STANDING flag, not a threshold crossed once:
- * true only while zero completed trades carry an unpaid fee. One unpaid trade
- * turns it off; paying turns it back on. tradeCount is deliberately unaffected,
- * so a profile never looks artificially thin because of a fee. */
-async function recomputeVerified(sellerId) {
-  const unpaid = await db.collection('requests')
-    .where('sellerId', '==', sellerId)
-    .where('status', '==', 'completed')
-    .where('feePaid', '==', false)
-    .limit(1).get();
-  await db.collection('users').doc(sellerId)
-    .update({ verifiedSeller: unpaid.empty })
-    .catch((e) => console.warn('verified recompute failed', e));
-}
 
 /* ---- Reviews -------------------------------------------------------------
  * The reviews themselves are a client write: the rules can fully express who
@@ -1367,214 +1339,6 @@ exports.onReviewCreate = onDocumentCreated('reviews/{reviewId}', async (event) =
     reviewCount: ratings.length
   });
 });
-
-/* =========================================================================
- * M8 — Trade verification fees
- *
- * The mechanism, restated because it is easy to get backwards: the fee does
- * NOT gate the sale. The app has no visibility into cash changing hands
- * outside it, so gating on the sale would be unenforceable theatre. It gates
- * a status the app fully controls — whether a seller's profile shows
- * "Verified".
- *
- * This is a seller-to-platform transaction. The actual board game sale — the
- * $30, the $50, whatever the game goes for — is never touched by this app,
- * never routed through Stripe, never processed here. That line does not move.
- *
- * Two secrets, both in Secret Manager, never in the repo:
- *   STRIPE_SECRET_KEY      creates Checkout Sessions
- *   STRIPE_WEBHOOK_SECRET  verifies that an incoming webhook is really Stripe
- * ========================================================================= */
-
-const STRIPE_SECRET = defineSecret('STRIPE_SECRET_KEY');
-const STRIPE_WEBHOOK_SECRET = defineSecret('STRIPE_WEBHOOK_SECRET');
-
-/* Same sentinel trick as GEOCODING_API_KEY: defineSecret blocks deployment of
- * the whole codebase if a secret is absent, so an unconfigured integration
- * would take every other function down with it. A placeholder value deploys and
- * fails loudly at call time instead. */
-const SECRET_PLACEHOLDER = 'PLACEHOLDER_SET_A_REAL_KEY';
-
-const FEE_CENTS = 25;
-const FEE_CURRENCY = 'usd';
-
-/* Where Stripe is allowed to send someone back to. An open redirect here would
- * let anyone turn a Tabled checkout link into a phishing hop, so the return URL
- * is validated against this list rather than trusted from the client. */
-const RETURN_ORIGINS = [
-  'https://tabled-2ad11.web.app',
-  'https://tabled-2ad11.firebaseapp.com',
-  'https://oldgodsslumber.github.io',
-  'http://localhost:8791',
-  'http://127.0.0.1:8791'
-];
-
-function safeReturnOrigin(candidate) {
-  const raw = String(candidate || '');
-  const hit = RETURN_ORIGINS.find((o) => raw.indexOf(o) === 0);
-  return hit || RETURN_ORIGINS[0];
-}
-
-function stripeClient() {
-  const key = STRIPE_SECRET.value();
-  if (!key || key === SECRET_PLACEHOLDER) {
-    throw new HttpsError('failed-precondition',
-      'Payments are not configured yet. Set a real key with: ' +
-      'firebase functions:secrets:set STRIPE_SECRET_KEY');
-  }
-  /* Required lazily so a missing dependency or bad key cannot break the module
-   * load for every other function in this file. */
-  return require('stripe')(key);
-}
-
-/* ---- createFeeCheckoutSession -------------------------------------------- */
-
-exports.createFeeCheckoutSession = onCall({ secrets: [STRIPE_SECRET] }, async (req) => {
-  requireAuth(req);
-  const uid = req.auth.uid;
-  const requestId = String((req.data || {}).requestId || '');
-  if (!requestId) throw new HttpsError('invalid-argument', 'requestId is required');
-
-  const snap = await db.collection('requests').doc(requestId).get();
-  if (!snap.exists) throw new HttpsError('not-found', 'No such trade');
-  const r = snap.data();
-
-  /* The fee is the SELLER's, not the buyer's. */
-  if (r.sellerId !== uid) {
-    throw new HttpsError('permission-denied', 'Only the seller pays this fee');
-  }
-  if (r.status !== 'completed') {
-    throw new HttpsError('failed-precondition', 'That trade is not complete');
-  }
-  if (r.feePaid === true) {
-    /* Already settled, whether by payment or by the launch waiver. Charging
-     * twice for one trade would be a genuine wrong, not just a duplicate. */
-    throw new HttpsError('already-exists', 'That trade is already settled');
-  }
-
-  const origin = safeReturnOrigin((req.data || {}).returnUrl);
-  const stripe = stripeClient();
-
-  const session = await stripe.checkout.sessions.create({
-    mode: 'payment',
-    line_items: [{
-      price_data: {
-        currency: FEE_CURRENCY,
-        unit_amount: FEE_CENTS,
-        product_data: {
-          name: 'Tabled verification fee',
-          description: 'Keeps your Verified badge current for ' +
-            (r.gameName || 'this trade') + '.'
-        }
-      },
-      quantity: 1
-    }],
-    /* Both of these are echoed back on the webhook. metadata is what the
-     * handler actually reads — client_reference_id is there so a human staring
-     * at the Stripe dashboard can tell which trade a payment belongs to. */
-    client_reference_id: requestId,
-    metadata: { requestId, sellerId: uid },
-    success_url: origin + '/index.html#/dashboard?fee=paid',
-    cancel_url: origin + '/index.html#/dashboard?fee=cancelled'
-  });
-
-  /* Recorded for support and reconciliation. Not used to decide anything —
-   * only the signed webhook may mark a fee paid. */
-  await snap.ref.update({
-    feeCheckoutSessionId: session.id,
-    feeCheckoutStartedAt: admin.firestore.FieldValue.serverTimestamp()
-  });
-
-  return { url: session.url, sessionId: session.id };
-});
-
-/* ---- stripeWebhook -------------------------------------------------------
- * The ONLY thing in the system that may set feePaid = true by payment.
- *
- * Signature verification is the entire security model here: this endpoint is
- * public, and without it anyone could POST a fake "payment succeeded" and mint
- * themselves a Verified badge. Two details make or break it:
- *
- *   1. It must verify against the RAW request body. Firebase parses JSON
- *      bodies by default, and a re-serialised body produces a different
- *      signature — which fails in a way that looks like a Stripe bug rather
- *      than our own. req.rawBody is the untouched buffer.
- *   2. It must run BEFORE anything trusts the payload. Nothing above the
- *      constructEvent call may read event data.
- */
-exports.stripeWebhook = onRequest(
-  { secrets: [STRIPE_SECRET, STRIPE_WEBHOOK_SECRET] },
-  async (request, response) => {
-    const whSecret = STRIPE_WEBHOOK_SECRET.value();
-    if (!whSecret || whSecret === SECRET_PLACEHOLDER) {
-      console.error('stripeWebhook called but STRIPE_WEBHOOK_SECRET is not configured');
-      response.status(503).send('Payments not configured');
-      return;
-    }
-
-    let event;
-    try {
-      const stripe = stripeClient();
-      event = stripe.webhooks.constructEvent(
-        request.rawBody,
-        request.headers['stripe-signature'],
-        whSecret
-      );
-    } catch (err) {
-      /* A failed signature is the mechanism working, not an outage. Answer 400
-       * so Stripe stops retrying, and never log the body. */
-      console.warn('stripeWebhook rejected an unsigned or malformed event:', err.message);
-      response.status(400).send('Invalid signature');
-      return;
-    }
-
-    if (event.type !== 'checkout.session.completed') {
-      /* Acknowledge everything else so Stripe does not retry events we simply
-       * do not act on. */
-      response.status(200).send('Ignored');
-      return;
-    }
-
-    const session = event.data.object;
-    const requestId = (session.metadata && session.metadata.requestId) ||
-      session.client_reference_id;
-    if (!requestId) {
-      console.error('checkout.session.completed with no requestId', session.id);
-      response.status(200).send('No request reference');
-      return;
-    }
-
-    try {
-      const ref = db.collection('requests').doc(requestId);
-      const snap = await ref.get();
-      if (!snap.exists) {
-        console.error('fee paid for a request that no longer exists', requestId);
-        response.status(200).send('Unknown request');
-        return;
-      }
-      const r = snap.data();
-
-      /* Idempotent by construction: Stripe retries webhooks, and setting a
-       * boolean that is already true costs nothing and changes nothing. */
-      await ref.update({
-        feePaid: true,
-        feePaidAt: admin.firestore.FieldValue.serverTimestamp(),
-        feeStripeSessionId: session.id,
-        feeAmountCents: session.amount_total || FEE_CENTS
-      });
-
-      await recomputeVerified(r.sellerId);
-      console.log(`fee settled for request ${requestId}, seller ${r.sellerId}`);
-      response.status(200).send('OK');
-    } catch (err) {
-      /* A 500 makes Stripe retry, which is what we want for a transient
-       * Firestore failure — the payment already happened and the badge must
-       * eventually reflect it. */
-      console.error('stripeWebhook failed to record payment', err);
-      response.status(500).send('Retry');
-    }
-  }
-);
 
 /* =========================================================================
  * Admin console — roles, moderation actions, audit trail
@@ -1753,12 +1517,7 @@ exports.adminAction = onCall(async (req) => {
         vipReason: reason
       });
 
-      /* Retroactive, deliberately. Without this a newly-made VIP keeps a dark
-       * badge because of last week's unpaid trade, which reads as the grant
-       * not having worked. */
-      const settled = await settleOutstandingFees(targetId);
-      await recomputeVerified(targetId);
-      result = { vipUntil: vipUntil ? vipUntil.toMillis() : null, settledFees: settled };
+      result = { vipUntil: vipUntil ? vipUntil.toMillis() : null };
       break;
     }
 
@@ -1802,22 +1561,6 @@ async function recountReports(targetType, targetId) {
   return n;
 }
 
-/* Mark a VIP's outstanding verification fees as settled by the grant. */
-async function settleOutstandingFees(sellerId) {
-  const unpaid = await db.collection('requests')
-    .where('sellerId', '==', sellerId)
-    .where('status', '==', 'completed')
-    .where('feePaid', '==', false)
-    .limit(300).get();
-
-  if (unpaid.empty) return 0;
-  const batch = db.batch();
-  unpaid.docs.forEach((doc) => {
-    batch.update(doc.ref, { feePaid: true, feeSettledBy: 'vip' });
-  });
-  await batch.commit();
-  return unpaid.size;
-}
 
 /* ---- setUserRole ---------------------------------------------------------
  * Admin-only. Writes a custom claim, which is what firestore.rules reads.

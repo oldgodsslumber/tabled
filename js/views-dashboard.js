@@ -26,16 +26,6 @@ window.DashboardView = (function () {
     latest = [];
     root.innerHTML = U.spinner('Loading your requests');
 
-    /* Stripe redirects back here. The webhook that actually records the payment
-     * is asynchronous, so the row may still show as unpaid for a few seconds —
-     * saying that is far better than letting someone think the payment failed
-     * and pay twice. */
-    var fee = params && params.fee;
-    if (fee === 'paid') {
-      U.toast('Payment received \u2014 your badge updates in a few seconds');
-    } else if (fee === 'cancelled') {
-      U.toast('Checkout cancelled \u2014 nothing was charged', 'warn');
-    }
 
     /* Loaded once per view rather than per row: a completed-trade list is
      * short, and an existence check per row would be N reads for one boolean. */
@@ -61,14 +51,6 @@ window.DashboardView = (function () {
     var buying = all.filter(function (r) { return r.buyerId === me && OPEN.indexOf(r.status) !== -1; });
     var closed = all.filter(function (r) { return OPEN.indexOf(r.status) === -1; });
 
-    /* Completed trades that still owe the verification fee. Seller-side only —
-     * the buyer never owes anything. Shown above everything else because an
-     * unpaid fee is the one thing here that is silently costing the person
-     * something: their Verified badge is off while it sits. */
-    var unpaid = all.filter(function (r) {
-      return r.sellerId === me && r.status === 'completed' && r.feePaid === false;
-    });
-
     /* Completed trades still owed a review. Surfaced as its own section because
      * a review prompt buried in a closed-threads list is a review nobody
      * writes — and reviews are the entire trust surface. */
@@ -79,26 +61,6 @@ window.DashboardView = (function () {
     root.innerHTML =
       '<div class="dash">' +
         '<h1>Requests</h1>' +
-
-        (unpaid.length
-          ? '<section class="block fee-prompt">' +
-              '<h2>Verification ' + U.esc(U.plural(unpaid.length, 'fee')) + ' due</h2>' +
-              '<p class="fine">Your <strong>Verified</strong> badge is off while any ' +
-                'completed trade has an unpaid fee. ' + U.esc(CFG.FEE.label) + ' each. ' +
-                'Your trade count is unaffected either way.</p>' +
-              unpaid.map(function (r) {
-                return '<div class="dash-row">' +
-                  '<div class="grow">' +
-                    '<strong>' + U.esc(r.gameName || 'Game') + '</strong>' +
-                    '<div class="dash-preview">sold to ' + U.esc(r.buyerName || 'a buyer') +
-                      ' \u00b7 ' + U.esc(U.ago(r.completedAt || r.updatedAt)) + '</div>' +
-                  '</div>' +
-                  '<button class="btn small" data-fee="' + U.attr(r.id) + '">Pay ' +
-                    U.esc(CFG.FEE.label) + '</button>' +
-                '</div>';
-              }).join('') +
-            '</section>'
-          : '') +
 
         (toReview.length
           ? '<section class="block review-prompt">' +
@@ -141,34 +103,7 @@ window.DashboardView = (function () {
         var r = latest.filter(function (x) { return x.id === t.dataset.review; })[0];
         if (r) ThreadView.reviewDialog(r);
       });
-      U.on(root, '[data-fee]', function (e, t) {
-        payFee(t.dataset.fee, t);
-      });
     }
-  }
-
-  /* Stripe Checkout is a full-page redirect, not an embedded form. That is
-   * deliberate on Stripe's part and ours: card details never touch this app,
-   * this origin, or this codebase. */
-  function payFee(requestId, btn) {
-    btn.disabled = true;
-    btn.textContent = 'Opening\u2026';
-    Store.startFeeCheckout(requestId).then(function (res) {
-      if (res && res.demo) {
-        U.toast('Fee settled (simulated \u2014 demo mode has no Stripe)');
-        return;
-      }
-      if (res && res.url) {
-        location.href = res.url;
-        return;
-      }
-      throw new Error('No checkout URL came back');
-    }).catch(function (err) {
-      console.error('[tabled] fee checkout failed', err);
-      U.toast((err && err.message) || 'Could not start checkout', 'bad');
-      btn.disabled = false;
-      btn.textContent = 'Pay ' + CFG.FEE.label;
-    });
   }
 
   function section(title, rows, emptyMsg) {
