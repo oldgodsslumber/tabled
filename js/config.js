@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260820f';
+  var BUILD = '20260821a';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -251,6 +251,24 @@ window.CFG = (function () {
     { key: 'trades', label: 'Trades' }
   ];
 
+  /* ---- Lots (Phase 3) ----------------------------------------------------
+   * A lot is several games sold as ONE unit at ONE price — a collector's
+   * edition with its expansions, a base game plus everything for it.
+   *
+   * Modelled as ONE gameEntry with a `contents` array, NOT as several entries.
+   * That is the load-bearing decision: every mechanism from M5 onward — hold,
+   * queue position, reserved, sold, auto-book, trade offers — operates on a
+   * single gameEntry. A lot modelled as one entry inherits all of it correctly,
+   * because a lot genuinely IS one item. Modelled as several entries, every one
+   * of those mechanisms would need a new "these move together" concept. */
+  var LOT_ROLES = [
+    { key: 'expansion', label: 'Expansion' },
+    { key: 'promo', label: 'Promo / mini-expansion' },
+    { key: 'accessory', label: 'Accessory / insert' },
+    { key: 'other', label: 'Something else' }
+  ];
+  var MAX_LOT_CONTENTS = 12;
+
   /* ---- Distance ----------------------------------------------------------
    * Radius options for the "near me" filter, in miles. */
   var RADII = [5, 10, 25, 50, 100];
@@ -302,6 +320,8 @@ window.CFG = (function () {
     FEE: FEE,
     EVENT: EVENT,
     PAYMENT: PAYMENT,
+    LOT_ROLES: LOT_ROLES,
+    MAX_LOT_CONTENTS: MAX_LOT_CONTENTS,
     isOpenRequest: isOpenRequest,
     REPORT_REASONS: REPORT_REASONS,
     SAFETY: SAFETY,

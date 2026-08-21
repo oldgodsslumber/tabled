@@ -1,4 +1,4 @@
-/* Tabled — Cloud Functions (M1–M3).
+/* Tabled — Cloud Functions (M1–M10).
  *
  * Everything here exists because it CANNOT be done from the browser:
  *
@@ -71,21 +71,80 @@ const xml = new XMLParser({
 
 /* ---- BGG plumbing -------------------------------------------------------- */
 
+/* NOT www.boardgamegeek.com. BGG state outright that the www subdomain
+ * "may interfere with request authorization" — the token silently stops
+ * working, which is a miserable thing to debug from the symptom. */
 const BGG_BASE = 'https://boardgamegeek.com/xmlapi2';
+
+/* ---- Authorization (required since 2025-07-02) ---------------------------
+ * BGG's XML API is no longer open. Every request needs a Bearer token from a
+ * registered application, and unregistered requests get a flat 401.
+ *
+ * Registration is at boardgamegeek.com/applications and BGG warn it can take
+ * "a week or more". Tabled counts as COMMERCIAL under their policy, because
+ * the verification fee is a user payment — their stated terms give a free
+ * commercial licence until 100 paying users.
+ *
+ * Worth recording honestly: approval is not guaranteed. BGG reserve the right
+ * to decline anything that "competes with any part of BGG's business", and
+ * they run their own marketplace. Everything downstream of this token is
+ * therefore contingent, which is why the manual-entry path below is built as
+ * a real alternative rather than an error state. */
+const BGG_TOKEN = defineSecret('BGG_API_TOKEN');
+
+/* BGG throttle hard: too-frequent requests earn 500/503, and their own docs
+ * suggest ~5 seconds between calls. maxInstances is pinned to 1 on the two
+ * BGG-facing functions so this in-process gate actually serializes everything
+ * rather than being sidestepped by a second container.
+ *
+ * That is only affordable because `games/{bggId}` caches results — the vast
+ * majority of lookups never reach BGG at all. */
+const BGG_MIN_GAP_MS = 5000;
+let bggLastCallAt = 0;
+
+async function bggThrottle() {
+  const wait = bggLastCallAt + BGG_MIN_GAP_MS - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  bggLastCallAt = Date.now();
+}
 
 /* BGG answers a cold `thing` request with HTTP 202 and an empty body, meaning
  * "queued, ask again". Treating that as success yields an empty game record
  * that then gets cached — so it has to be retried, not accepted. */
 async function bggFetch(path, attempt = 0) {
+  const token = BGG_TOKEN.value();
+  if (!token || token === 'PLACEHOLDER_SET_A_REAL_KEY') {
+    /* failed-precondition, not unavailable: this is a configuration state that
+     * will not fix itself, and the client uses the distinction to fall back to
+     * manual entry permanently rather than offering a pointless retry. */
+    throw new HttpsError('failed-precondition',
+      'BoardGameGeek search needs an approved API token. Register the app at ' +
+      'boardgamegeek.com/applications, then set BGG_API_TOKEN.');
+  }
+
+  await bggThrottle();
+
   const res = await fetch(BGG_BASE + path, {
-    headers: { 'User-Agent': 'Tabled/1.0 (local board game marketplace)' }
+    headers: {
+      /* "Bearer" then a space, no colon. */
+      'Authorization': 'Bearer ' + token,
+      'User-Agent': 'Tabled/1.0 (local board game marketplace)'
+    }
   });
 
   if (res.status === 202 && attempt < 3) {
     await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
     return bggFetch(path, attempt + 1);
   }
-  if (res.status === 429) {
+  if (res.status === 401 || res.status === 403) {
+    /* The token is missing, wrong, revoked, or the request went to the www
+     * subdomain. All four look identical from here. */
+    console.error('BGG rejected our token (' + res.status + ') for ' + path);
+    throw new HttpsError('failed-precondition',
+      'BoardGameGeek rejected our API token. It may not be approved yet, or it ' +
+      'may have been revoked.');
+  }
+  if (res.status === 429 || res.status === 503 || res.status === 500) {
     throw new HttpsError('resource-exhausted',
       'BoardGameGeek is rate-limiting requests. Try again in a moment.');
   }
@@ -132,7 +191,7 @@ function medianUsdPrice(item) {
 
 /* ---- searchGames --------------------------------------------------------- */
 
-exports.searchGames = onCall(async (req) => {
+exports.searchGames = onCall({ secrets: [BGG_TOKEN], maxInstances: 1 }, async (req) => {
   requireAuth(req);
   const query = String(req.data?.query || '').trim();
   if (query.length < 2) return { results: [] };
@@ -162,7 +221,7 @@ exports.searchGames = onCall(async (req) => {
 
 /* ---- getGameDetails ------------------------------------------------------ */
 
-exports.getGameDetails = onCall(async (req) => {
+exports.getGameDetails = onCall({ secrets: [BGG_TOKEN], maxInstances: 1 }, async (req) => {
   requireAuth(req);
   const bggId = String(req.data?.bggId || '').trim();
   if (!/^\d+$/.test(bggId)) {

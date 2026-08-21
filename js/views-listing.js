@@ -26,7 +26,16 @@ window.ListingView = (function () {
       })
       .then(function (es) {
         entries = es;
-        return Store.getGames(entries.map(function (e) { return e.bggId; }).filter(Boolean));
+        /* Contents count too. Fetching only the headline ids left a lot's
+         * bundled games with no cached record, so the deal badge silently
+         * priced the base game alone while the feed card (built from the
+         * rollup, which does sum the lot) quoted the full total. */
+        var ids = [];
+        entries.forEach(function (e) {
+          if (e.bggId) ids.push(e.bggId);
+          (e.contents || []).forEach(function (c) { if (c.bggId) ids.push(c.bggId); });
+        });
+        return Store.getGames(ids);
       })
       .then(function (g) {
         games = g;
@@ -68,7 +77,7 @@ window.ListingView = (function () {
           '<div>' +
             '<h1>' + U.esc(l.title || (l.gameNames && l.gameNames[0]) || 'Listing') + '</h1>' +
             '<p class="detail-sub">' +
-              U.esc(U.plural(entries.length, 'game')) +
+              U.esc(gameCountLabel(entries)) +
               ' · ' + U.esc(U.ago(l.createdAt)) +
               (l.locationLabel ? ' · ' + U.esc(l.locationLabel) : '') +
             '</p>' +
@@ -92,9 +101,14 @@ window.ListingView = (function () {
 
         '<div class="entries">' +
           entries.map(function (e) {
-            return entryHtml(e, games[String(e.bggId)], mine, l);
+            return entryHtml(e, games[String(e.bggId)], mine, l, games);
           }).join('') +
         '</div>' +
+
+        (Object.keys(games).length
+          ? '<p class="bgg-attrib"><a href="https://boardgamegeek.com" target="_blank" ' +
+            'rel="noopener noreferrer">Powered by BGG</a></p>'
+          : '') +
 
         sellerCard(l) +
 
@@ -144,6 +158,16 @@ window.ListingView = (function () {
         });
       });
     });
+  }
+
+  /* "1 game" reads wrong on a listing holding a three-game lot. Count what is
+   * actually in the boxes, and say how many boxes when they differ. */
+  function gameCountLabel(entries) {
+    var total = entries.reduce(function (n, e) {
+      return n + 1 + ((e.contents || []).length);
+    }, 0);
+    if (total === entries.length) return U.plural(total, 'game');
+    return U.plural(total, 'game') + ' in ' + U.plural(entries.length, 'lot');
   }
 
   /* What this seller will take. Purely informational except for Trades, which
@@ -214,19 +238,36 @@ window.ListingView = (function () {
     return 'You\'re #' + (r.queuePosition + 1) + ' in line.';
   }
 
-  function entryHtml(e, game, mine, listingRef) {
+  function entryHtml(e, game, mine, listingRef, games) {
     var cond = CFG.condition(e.condition);
     var name = e.name || (game && game.name) || 'Untitled game';
     var year = game && game.yearPublished ? ' <span class="year">(' + game.yearPublished + ')</span>' : '';
     var photos = (e.photos || []).map(U.safeUrl).filter(Boolean);
     var box = U.safeUrl(game && game.imageUrl);
 
+    /* For a lot this has to total EVERYTHING in the box, not just the headline
+     * game — otherwise this badge and the feed card's badge (which comes from
+     * the rollup, and does sum the lot) quote different numbers for the same
+     * listing. Two places disagreeing about one figure is worse than neither
+     * showing it. */
+    var lotTotal = game && typeof game.suggestedPrice === 'number' ? game.suggestedPrice : 0;
+    var pricedContents = 0;
+    (e.contents || []).forEach(function (c) {
+      var cg = c.bggId ? games[String(c.bggId)] : null;
+      if (cg && typeof cg.suggestedPrice === 'number') {
+        lotTotal += cg.suggestedPrice;
+        pricedContents++;
+      }
+    });
+
     var deal = '';
-    if (game && game.suggestedPrice > 0 && typeof e.askingPrice === 'number' && e.askingPrice < game.suggestedPrice) {
-      var pct = Math.round((1 - e.askingPrice / game.suggestedPrice) * 100);
+    if (lotTotal > 0 && typeof e.askingPrice === 'number' && e.askingPrice < lotTotal) {
+      var pct = Math.round((1 - e.askingPrice / lotTotal) * 100);
       if (pct >= 5) {
+        var isLot = (e.contents || []).length > 0;
         deal = '<span class="badge deal">' + pct + '% under the ' +
-          U.esc(U.money(game.suggestedPrice)) + ' BGG marketplace price</span>';
+          U.esc(U.money(lotTotal)) + ' BGG marketplace ' +
+          (isLot ? 'value of the lot' : 'price') + '</span>';
       }
     }
 
@@ -245,6 +286,22 @@ window.ListingView = (function () {
           (deal ? '<div class="entry-deal">' + deal + '</div>' : '') +
         '</div>' +
       '</div>' +
+
+      ((e.contents && e.contents.length)
+        ? '<div class="lot-contents">' +
+            '<span class="badge deal">Lot of ' + (e.contents.length + 1) + '</span>' +
+            '<ul>' +
+              '<li><strong>' + U.esc(name) + '</strong> <span class="fine">base</span></li>' +
+              e.contents.map(function (c) {
+                var role = CFG.LOT_ROLES.filter(function (r) { return r.key === c.role; })[0];
+                return '<li>' + U.esc(c.name) +
+                  ' <span class="fine">' + U.esc(role ? role.label.toLowerCase() : c.role) +
+                  '</span></li>';
+              }).join('') +
+            '</ul>' +
+            '<p class="fine">Sold together as one item.</p>' +
+          '</div>'
+        : '') +
 
       ((e.tags && e.tags.length)
         ? '<div class="chip-row tight">' + e.tags.map(function (t) {

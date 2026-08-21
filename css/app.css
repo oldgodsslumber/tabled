@@ -1005,6 +1005,49 @@ select {
 .entry-cta { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
 .entry-cta .fine { flex-basis: 100%; margin: .2rem 0 0; }
 
+/* ---- BGG attribution ----------------------------------------------------- */
+
+/* Licence condition, not decoration: BGG require public-facing apps to show
+   the mark, linking back, wherever their data appears. */
+.bgg-attrib { margin: .6rem 0 0; font-size: .75rem; }
+.bgg-attrib a {
+  display: inline-block;
+  padding: .15rem .5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  text-decoration: none;
+  letter-spacing: .02em;
+}
+.bgg-attrib a:hover { color: var(--navy); border-color: var(--navy); }
+
+/* ---- Lots (Phase 3) ------------------------------------------------------ */
+
+.lot-field { border-top: 1px dashed var(--line); padding-top: .7rem; }
+.lot-list { display: grid; gap: .35rem; margin-bottom: .5rem; }
+.lot-item {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .4rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--paper);
+}
+.lot-item .grow { display: flex; flex-direction: column; min-width: 0; }
+.lot-item .fine { margin: 0; }
+
+.lot-contents {
+  margin-top: .75rem;
+  padding: .6rem .8rem;
+  background: var(--amber-dim);
+  border-radius: var(--r-sm);
+}
+.lot-contents ul { margin: .4rem 0 0; padding-left: 1.1rem; }
+.lot-contents li { margin-bottom: .15rem; }
+.lot-contents .fine { display: inline; margin: 0; }
+.lot-contents > .fine { display: block; margin-top: .4rem; }
+
 /* ---- Overflow menu ------------------------------------------------------- */
 
 .overflow { position: relative; flex: none; }

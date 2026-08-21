@@ -21,7 +21,7 @@ window.CreateView = (function () {
   function blankEntry(seed) {
     return Object.assign({
       id: null, bggId: null, name: '', condition: 'VG',
-      tags: [], photos: [], askingPrice: null, notes: ''
+      categories: [], contents: [], tags: [], photos: [], askingPrice: null, notes: ''
     }, seed || {});
   }
 
@@ -100,13 +100,19 @@ window.CreateView = (function () {
           '<h2>Games in this listing</h2>' +
           '<div id="entries"></div>' +
           '<div class="add-game">' +
-            '<label class="field">' +
-              '<span>Add a game</span>' +
-              '<input id="bgg-q" type="search" autocomplete="off" ' +
-                'placeholder="Search BoardGameGeek — start typing a title">' +
-            '</label>' +
-            '<div id="bgg-results" class="bgg-results" hidden></div>' +
-            '<button class="btn ghost small" id="add-manual">Add a game manually instead</button>' +
+            (BGG.available()
+              ? '<label class="field">' +
+                  '<span>Add a game</span>' +
+                  '<input id="bgg-q" type="search" autocomplete="off" ' +
+                    'placeholder="Search BoardGameGeek — start typing a title">' +
+                '</label>' +
+                '<div id="bgg-results" class="bgg-results" hidden></div>' +
+                '<button class="btn ghost small" id="add-manual">Add a game manually instead</button>' +
+                bggAttribution()
+              : '<p class="fine">' + U.esc(BGG.reason() ||
+                  'BoardGameGeek search is unavailable here, so games are entered by hand.') +
+                '</p>' +
+                '<button class="btn ghost small" id="add-manual">Add a game</button>') +
           '</div>' +
         '</section>' +
 
@@ -157,6 +163,18 @@ window.CreateView = (function () {
     wire(root);
   }
 
+  /* Summed marketplace value of a lot: the headline game plus everything
+   * bundled with it. This is what the Good Deal sort compares against. */
+  function lotValue(e) {
+    var g = e.bggId ? gamesById[String(e.bggId)] : null;
+    var total = g && typeof g.suggestedPrice === 'number' ? g.suggestedPrice : 0;
+    (e.contents || []).forEach(function (c) {
+      var cg = c.bggId ? gamesById[String(c.bggId)] : null;
+      if (cg && typeof cg.suggestedPrice === 'number') total += cg.suggestedPrice;
+    });
+    return total;
+  }
+
   function geoStatus() {
     if (!draft.locationLabel) return 'No area set — this listing won\'t appear in distance searches.';
     if (!draft.geoPoint) return 'Area not yet mapped — it will be looked up when you save.';
@@ -167,6 +185,166 @@ window.CreateView = (function () {
     var host = U.$('#entries');
     if (!host) return;
     host.innerHTML = draft.entries.map(entryHtml).join('');
+  }
+
+  /* BGG's licence requires public-facing apps to display the "Powered by BGG"
+   * mark linking back to them, wherever their data appears.
+   *
+   * TODO before launch: this renders a text mark. BGG supply official logo
+   * files and ask that one be used, sized so the text stays legible. Drop the
+   * asset in and swap the span for an <img>. */
+  function bggAttribution() {
+    return '<p class="bgg-attrib">' +
+      '<a href="https://boardgamegeek.com" target="_blank" rel="noopener noreferrer">' +
+        'Powered by BGG' +
+      '</a></p>';
+  }
+
+  /* Categories for a hand-entered game. BGG normally supplies these, and
+   * without them a listing never matches a category filter — so when BGG is
+   * out of the picture the seller gets to pick them. */
+  function manualCategoryHtml(e, i) {
+    if (e.bggId) return '';
+    var chosen = e.categories || [];
+    return '<div class="field">' +
+      '<span>Categories <em>optional</em></span>' +
+      '<select class="e-cat-add">' +
+        '<option value="">Add a category…</option>' +
+        CFG.BGG_CATEGORIES.filter(function (c) { return chosen.indexOf(c) === -1; })
+          .map(function (c) {
+            return '<option value="' + U.attr(c) + '">' + U.esc(c) + '</option>';
+          }).join('') +
+      '</select>' +
+      (chosen.length
+        ? '<div class="chip-row tight" style="margin-top:.4rem">' +
+            chosen.map(function (c) {
+              return '<button class="chip on" data-rmcat="' + U.attr(c) + '">' +
+                U.esc(c) + ' <span class="x">&times;</span></button>';
+            }).join('') +
+          '</div>'
+        : '') +
+      '<span class="fine">Without these, this listing won\'t show up when someone ' +
+        'filters by category.</span>' +
+    '</div>';
+  }
+
+  /* ---- Lots (Phase 3) -----------------------------------------------------
+   * "It's a collector's edition with two expansions in the box" is one item
+   * with one price, so it is one entry with contents — not three entries. */
+  function lotHtml(e, i) {
+    var contents = e.contents || [];
+    return '<div class="field lot-field">' +
+      '<span>Also in this lot <em>optional</em></span>' +
+      (contents.length
+        ? '<div class="lot-list">' + contents.map(function (c, ci) {
+            var role = CFG.LOT_ROLES.filter(function (r) { return r.key === c.role; })[0];
+            return '<div class="lot-item">' +
+              '<div class="grow">' +
+                '<strong>' + U.esc(c.name) + '</strong>' +
+                '<span class="fine">' + U.esc(role ? role.label : c.role) +
+                  (c.bggId ? ' \u00b7 BGG #' + U.esc(c.bggId) : ' \u00b7 entered by hand') +
+                '</span>' +
+              '</div>' +
+              '<button class="icon-btn danger" data-rmcontent="' + ci + '" ' +
+                'aria-label="Remove from lot">&times;</button>' +
+            '</div>';
+          }).join('') + '</div>'
+        : '') +
+      (contents.length < CFG.MAX_LOT_CONTENTS
+        ? '<button class="btn ghost small" data-addlot="' + i + '">' +
+            (contents.length ? 'Add another' : 'Add an expansion or extra') +
+          '</button>'
+        : '<p class="fine">That\'s the most a single lot can hold.</p>') +
+      (contents.length
+        ? '<span class="fine">These sell together as one item at the price above \u2014 ' +
+          'nobody can request just part of the lot.</span>'
+        : '<span class="fine">For a collector\'s edition or a base game bundled with ' +
+          'its expansions.</span>') +
+    '</div>';
+  }
+
+  /* Adding to a lot reuses the same BGG-or-manual split as the main game
+   * picker, so it degrades identically when BGG is unavailable. */
+  function openLotAdd(entryIndex) {
+    var entry = draft.entries[entryIndex];
+    var m = U.modal('Add to this lot',
+      (BGG.available()
+        ? '<label class="field"><span>Search BoardGameGeek</span>' +
+            '<input id="lot-q" type="search" autocomplete="off" ' +
+              'placeholder="Start typing an expansion name"></label>' +
+          '<div id="lot-results" class="bgg-results" hidden></div>' +
+          '<p class="fine">Or add it by hand below.</p>'
+        : '') +
+      '<label class="field"><span>Name</span>' +
+        '<input id="lot-name" type="text" maxlength="120" placeholder="Wolfenstein: The Board Game – Ghost Files"></label>' +
+      '<label class="field"><span>What is it?</span>' +
+        '<select id="lot-role">' +
+          CFG.LOT_ROLES.map(function (r) {
+            return '<option value="' + U.attr(r.key) + '">' + U.esc(r.label) + '</option>';
+          }).join('') +
+        '</select></label>' +
+      '<div class="modal-actions">' +
+        '<button class="btn ghost" data-act="cancel">Cancel</button>' +
+        '<button class="btn" data-act="add">Add to lot</button>' +
+      '</div>');
+
+    var picked = null;
+
+    if (BGG.available()) {
+      var q = U.$('#lot-q', m.el);
+      var results = U.$('#lot-results', m.el);
+      q.addEventListener('input', U.debounce(function () {
+        var text = q.value.trim();
+        if (text.length < 2) { results.hidden = true; results.innerHTML = ''; return; }
+        results.hidden = false;
+        results.innerHTML = U.spinner('Searching');
+        BGG.search(text).then(function (rows) {
+          if (q.value.trim() !== text) return;
+          if (!rows.length) { results.innerHTML = '<p class="fine pad">No matches.</p>'; return; }
+          results.innerHTML = rows.map(function (r) {
+            return '<button class="bgg-row" data-lotpick="' + U.attr(r.bggId) + '" ' +
+              'data-name="' + U.attr(r.name) + '"><strong>' + U.esc(r.name) + '</strong>' +
+              (r.yearPublished ? '<span class="year">' + U.esc(r.yearPublished) + '</span>' : '') +
+              '</button>';
+          }).join('');
+        });
+      }, 450));
+
+      U.on(results, '[data-lotpick]', function (e, t) {
+        picked = { bggId: t.dataset.lotpick, name: t.dataset.name };
+        U.$('#lot-name', m.el).value = t.dataset.name;
+        results.hidden = true;
+        /* Pull categories in the background so the lot's contents contribute
+         * to filtering just as the headline game does. */
+        BGG.details(picked.bggId).then(function (game) {
+          if (game) gamesById[String(picked.bggId)] = game;
+        });
+      });
+    }
+
+    U.on(m.el, '[data-act]', function (e, t) {
+      if (t.dataset.act === 'cancel') { m.close(); return; }
+      var name = U.$('#lot-name', m.el).value.trim();
+      if (!name) { U.toast('Give it a name', 'warn'); return; }
+
+      var bggId = picked && picked.name === name ? picked.bggId : null;
+      if (entry.contents.some(function (c) {
+        return (bggId && String(c.bggId) === String(bggId)) ||
+          (!bggId && c.name.toLowerCase() === name.toLowerCase());
+      })) {
+        U.toast('That is already in this lot', 'warn');
+        return;
+      }
+
+      entry.contents.push({
+        bggId: bggId,
+        name: name,
+        role: U.$('#lot-role', m.el).value,
+        categories: []
+      });
+      m.close();
+      drawEntries();
+    });
   }
 
   function entryHtml(e, i) {
@@ -198,8 +376,12 @@ window.CreateView = (function () {
             'placeholder="Open to offers" value="' +
             (typeof e.askingPrice === 'number' ? U.attr(e.askingPrice) : '') + '">' +
           (suggested
-            ? '<span class="fine">BGG marketplace sits around ' + U.esc(U.money(suggested)) +
-              '. Price under it and this shows up in the Good Deal sort.</span>'
+            ? '<span class="fine">' +
+                ((e.contents || []).length
+                  ? 'Everything in this lot is worth about ' + U.esc(U.money(lotValue(e))) +
+                    ' on the BGG marketplace.'
+                  : 'BGG marketplace sits around ' + U.esc(U.money(suggested)) + '.') +
+                ' Price under it and this shows up in the Good Deal sort.</span>'
             : '') +
         '</label>' +
         '<label class="field">' +
@@ -213,6 +395,10 @@ window.CreateView = (function () {
           '<span class="fine">' + U.esc(CFG.condition(e.condition).blurb) + '</span>' +
         '</label>' +
       '</div>' +
+
+      lotHtml(e, i) +
+
+      manualCategoryHtml(e, i) +
 
       '<div class="field">' +
         '<span>Tags</span>' +
@@ -473,6 +659,12 @@ window.CreateView = (function () {
         entry.condition = e.target.value;
         var hint = e.target.parentNode.querySelector('.fine');
         if (hint) hint.textContent = CFG.condition(entry.condition).blurb;
+      } else if (e.target.classList.contains('e-cat-add')) {
+        var cat = e.target.value;
+        if (cat && entry.categories.indexOf(cat) === -1) {
+          entry.categories.push(cat);
+          drawEntries();
+        }
       } else if (e.target.classList.contains('e-photo')) {
         addPhotos(idx, e.target.files);
         e.target.value = '';
@@ -486,6 +678,24 @@ window.CreateView = (function () {
       var i = entry.tags.indexOf(tag);
       if (i === -1) entry.tags.push(tag); else entry.tags.splice(i, 1);
       t.classList.toggle('on', i === -1);
+    });
+
+    U.on(host, '[data-addlot]', function (e, t) {
+      openLotAdd(Number(t.dataset.addlot));
+    });
+
+    U.on(host, '[data-rmcontent]', function (e, t) {
+      var block = t.closest('.entry-edit');
+      var entry = draft.entries[Number(block.dataset.i)];
+      entry.contents.splice(Number(t.dataset.rmcontent), 1);
+      drawEntries();
+    });
+
+    U.on(host, '[data-rmcat]', function (e, t) {
+      var block = t.closest('.entry-edit');
+      var entry = draft.entries[Number(block.dataset.i)];
+      var i = entry.categories.indexOf(t.dataset.rmcat);
+      if (i !== -1) { entry.categories.splice(i, 1); drawEntries(); }
     });
 
     U.on(host, '[data-remove]', function (e, t) {
@@ -504,6 +714,13 @@ window.CreateView = (function () {
     /* ---- BGG autocomplete ---- */
     var q = U.$('#bgg-q', root);
     var results = U.$('#bgg-results', root);
+    if (!q || !results) {
+      /* BGG unavailable: only the manual button exists. */
+      var addBtn = U.$('#add-manual', root);
+      if (addBtn) addBtn.addEventListener('click', function () { pushEntry(blankEntry()); });
+      U.$('#save', root).addEventListener('click', save);
+      return;
+    }
 
     /* Debounced hard. BGG's rate limits are real and undocumented; a search per
      * keystroke is the fastest way to get an app blocked by them. */

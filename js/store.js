@@ -87,15 +87,41 @@ window.Store = (function () {
       if (g) {
         cats = cats.concat(g.categories || []);
         mechs = mechs.concat(g.mechanics || []);
+      } else {
+        /* Hand-entered: the seller picked these themselves. Without this a
+         * manual listing is invisible to every category filter, which quietly
+         * makes the no-BGG path a second-class one. */
+        cats = cats.concat(e.categories || []);
       }
       if (e.condition) conds.push(e.condition);
       tags = tags.concat(e.tags || []);
 
+      /* A lot's contents are searchable and filterable in their own right —
+       * somebody hunting the expansion should find the box it's bundled in. */
+      var contents = e.contents || [];
+      var suggestedTotal = g && typeof g.suggestedPrice === 'number' ? g.suggestedPrice : 0;
+
+      contents.forEach(function (c) {
+        var cg = c.bggId ? gamesById[String(c.bggId)] : null;
+        var cname = c.name || (cg && cg.name) || '';
+        if (cname) names.push(cname);
+        if (c.bggId) bggIds.push(String(c.bggId));
+        if (cg) {
+          cats = cats.concat(cg.categories || []);
+          mechs = mechs.concat(cg.mechanics || []);
+          if (typeof cg.suggestedPrice === 'number') suggestedTotal += cg.suggestedPrice;
+        } else {
+          cats = cats.concat(c.categories || []);
+        }
+      });
+
       if (typeof e.askingPrice === 'number' && !isNaN(e.askingPrice)) {
         prices.push(e.askingPrice);
-        var sug = g && typeof g.suggestedPrice === 'number' ? g.suggestedPrice : null;
-        if (sug && sug > 0 && e.askingPrice < sug) {
-          var d = (sug - e.askingPrice) / sug;
+        /* For a lot, the comparison is the asking price against the summed
+         * value of everything in the box. That is exactly where a collector's
+         * edition should look like the deal it is. */
+        if (suggestedTotal > 0 && e.askingPrice < suggestedTotal) {
+          var d = (suggestedTotal - e.askingPrice) / suggestedTotal;
           if (bestDeal === null || d > bestDeal) bestDeal = d;
         }
       }
@@ -392,6 +418,10 @@ window.Store = (function () {
             bggId: e.bggId || null,
             name: e.name || '',
             condition: e.condition || 'VG',
+            categories: e.categories || [],
+            /* A lot: several games sold as one unit. One price, one condition,
+             * one queue position, one sold state — because it is one item. */
+            contents: e.contents || [],
             tags: e.tags || [],
             photos: e.photos || [],
             askingPrice: typeof e.askingPrice === 'number' ? e.askingPrice : null,
@@ -1010,11 +1040,28 @@ window.Store = (function () {
         });
       },
 
-      getGame: function (bggId) { return Promise.resolve(clone(db.games[String(bggId)]) || null); },
+      /* In cloud mode `games/{bggId}` is populated as a side effect of every
+       * getGameDetails call, so anything ever looked up is cached. Demo mode
+       * has no such write path, so the seeded five were the only games that
+       * existed — which meant a lot's bundled games had no record and their
+       * value silently dropped out of the deal calculation.
+       *
+       * Falling back to BGG's demo catalog reproduces the cloud behaviour:
+       * anything findable by search is findable by id afterwards. */
+      getGame: function (bggId) {
+        var id = String(bggId);
+        if (db.games[id]) return Promise.resolve(clone(db.games[id]));
+        return Promise.resolve(demoCatalogGame(id));
+      },
       getGames: function (ids) {
         var map = {};
         U.uniq(ids || []).forEach(function (id) {
-          if (db.games[String(id)]) map[String(id)] = clone(db.games[String(id)]);
+          var key = String(id);
+          if (db.games[key]) map[key] = clone(db.games[key]);
+          else {
+            var fallback = demoCatalogGame(key);
+            if (fallback) map[key] = fallback;
+          }
         });
         return Promise.resolve(map);
       },
@@ -1622,6 +1669,14 @@ window.Store = (function () {
 
     function find(id) {
       return db.requests.filter(function (r) { return r.id === id; })[0];
+    }
+
+    /* BGG is a sibling module and may load after this one, so it's read
+     * lazily rather than captured. */
+    function demoCatalogGame(id) {
+      if (typeof BGG === 'undefined' || !BGG.DEMO_CATALOG) return null;
+      var hit = BGG.DEMO_CATALOG.filter(function (g) { return g.bggId === id; })[0];
+      return hit ? Object.assign({ id: id, imageUrl: null }, hit) : null;
     }
   }
 

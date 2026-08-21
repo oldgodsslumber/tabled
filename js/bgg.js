@@ -19,6 +19,19 @@ window.BGG = (function () {
   var detailCache = Object.create(null);
   var searchCache = Object.create(null);
 
+  /* Set once the server tells us BGG is not usable — no approved token, or a
+   * revoked one. That is a configuration state, not a blip, so retrying every
+   * keystroke would just be noise. Latching it lets the create form commit to
+   * the manual path and say so plainly instead of flickering between the two. */
+  var unusable = false;
+  var unusableReason = '';
+
+  function markUnusable(reason) {
+    unusable = true;
+    unusableReason = reason ||
+      'BoardGameGeek search is unavailable, so games are entered by hand.';
+  }
+
   /* A small offline catalog so the listing form's autocomplete is usable in
    * demo mode. Deliberately tiny — it is a demo affordance, not a fallback data
    * source, and it never runs once a real project is configured. */
@@ -56,7 +69,12 @@ window.BGG = (function () {
 
   function attach(callableRunner) { call = callableRunner; }
 
-  function available() { return !!call; }
+  /* Whether a game SEARCH can be offered at all — not whether the real BGG is
+   * reachable. Demo mode has no callable but does have the offline catalog
+   * below, so search still works there; only a latched unusable state (no
+   * approved token, or a revoked one) takes the search box away. */
+  function available() { return !unusable; }
+  function reason() { return unusableReason; }
 
   /* Candidate matches for the create-listing autocomplete. Results are cached
    * by query string for the life of the page — users backspace constantly, and
@@ -81,7 +99,16 @@ window.BGG = (function () {
       })
       .catch(function (err) {
         console.warn('[tabled] BGG search failed', err);
-        if (err && /resource-exhausted|429/i.test(err.code || err.message || '')) {
+        var code = (err && err.code) || '';
+        var msg = (err && err.message) || '';
+
+        if (/failed-precondition/.test(code)) {
+          /* Not a transient failure. Latch it and let the form switch to
+           * manual entry for good rather than offering a retry that cannot
+           * succeed. */
+          markUnusable(msg);
+          U.toast('BoardGameGeek search is unavailable — enter games by hand', 'warn');
+        } else if (/resource-exhausted|429/i.test(code + ' ' + msg)) {
           U.toast('BoardGameGeek is rate-limiting us — try again in a moment', 'warn');
         } else {
           U.toast('Could not reach BoardGameGeek — you can still enter the game manually', 'warn');
@@ -119,7 +146,11 @@ window.BGG = (function () {
       })
       .catch(function (err) {
         console.warn('[tabled] BGG details failed', err);
-        U.toast('Could not load that game from BoardGameGeek', 'warn');
+        if (/failed-precondition/.test((err && err.code) || '')) {
+          markUnusable((err && err.message) || '');
+        } else {
+          U.toast('Could not load that game from BoardGameGeek', 'warn');
+        }
         return null;
       });
   }
@@ -135,6 +166,8 @@ window.BGG = (function () {
   return {
     attach: attach,
     available: available,
+    reason: reason,
+    markUnusable: markUnusable,
     search: search,
     details: details,
     DEMO_CATALOG: DEMO_CATALOG
