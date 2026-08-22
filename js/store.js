@@ -1159,6 +1159,15 @@ window.Store = (function () {
         Object.keys(rollup).forEach(function (k) { l[k] = rollup[k]; });
         l.hotScore = hotScore(l);
 
+        /* Persist the game data the seller looked up, so the listing detail can
+         * render its image and categories later. In cloud mode getGameDetails
+         * writes games/{bggId} as a side effect; demo mode has no such write, so
+         * without this a Wikidata- or BGG-sourced game would lose its image and
+         * categories the moment the create form closed. */
+        Object.keys(gamesById || {}).forEach(function (gid) {
+          db.games[gid] = clone(gamesById[gid]);
+        });
+
         /* Seed the same hold/queue defaults the cloud path writes. Leaving them
          * undefined here would let the demo backend produce entries the M5
          * functions couldn't update in place — and the divergence would only
