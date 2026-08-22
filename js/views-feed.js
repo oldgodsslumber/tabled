@@ -29,18 +29,23 @@ window.Feed = (function () {
     var titleLine = l.title || names[0] || 'Untitled listing';
     var extra = names.length > 1 ? ' <span class="plus">+' + (names.length - 1) + ' more</span>' : '';
     var price = priceLabel(l);
-    var deal = l.bestDealScore > 0.12
+    /* A sold (archived) card is a record, not an offer: dim it, badge it
+     * "Sold", and drop the deal badge -- how far under BGG it once was is noise
+     * once it's gone. It still links through to the (now read-only) listing. */
+    var sold = l.status === 'archived';
+    var deal = (!sold && l.bestDealScore > 0.12)
       ? '<span class="badge deal">' + Math.round(l.bestDealScore * 100) + '% under BGG</span>'
       : '';
+    var soldBadge = sold ? '<span class="badge sold">Sold</span>' : '';
     var dist = (typeof l._distanceMi === 'number')
       ? Geo.describeDistance(l._distanceMi)
       : (l.locationLabel || '');
 
-    return '<a class="card" href="#/listing/' + U.attr(l.id) + '">' +
+    return '<a class="card' + (sold ? ' is-sold' : '') + '" href="#/listing/' + U.attr(l.id) + '">' +
       '<div class="card-photo' + (cover ? '' : ' noimg') + '"' +
         (cover ? ' style="background-image:url(' + U.attr(cover) + ')"' : '') + '>' +
         (cover ? '' : '<span class="noimg-mark">' + U.esc(U.initials(titleLine)) + '</span>') +
-        (deal ? '<div class="card-badges">' + deal + '</div>' : '') +
+        (deal || soldBadge ? '<div class="card-badges">' + soldBadge + deal + '</div>' : '') +
       '</div>' +
       '<div class="card-body">' +
         '<h3 class="card-title">' + U.esc(titleLine) + extra + '</h3>' +
@@ -52,8 +57,12 @@ window.Feed = (function () {
         '</div>' +
         '<div class="card-sub">' +
           '<span>' + U.esc(l.sellerName || 'Seller') + '</span>' +
-          (dist ? '<span class="dot">·</span><span>' + U.esc(dist) + '</span>' : '') +
-          '<span class="dot">·</span><span>' + U.esc(U.ago(l.createdAt)) + '</span>' +
+          /* Sold cards drop distance (you can't go get it) and show when it
+           * sold rather than when it was posted. */
+          (sold
+            ? '<span class="dot">·</span><span>Sold ' + U.esc(U.ago(l.updatedAt || l.createdAt)) + '</span>'
+            : (dist ? '<span class="dot">·</span><span>' + U.esc(dist) + '</span>' : '') +
+              '<span class="dot">·</span><span>' + U.esc(U.ago(l.createdAt)) + '</span>') +
         '</div>' +
       '</div>' +
     '</a>';

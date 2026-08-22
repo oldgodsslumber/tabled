@@ -65,13 +65,29 @@ service cloud.firestore {
         )
       );
     }
-    // Null is permitted: a profile has no area until its owner sets one, and a
-    // shipping-only listing never needs a point at all.
+    // Null is permitted: a profile has no area until its owner sets one, and an
+    // event-only listing carries the event's location rather than its own.
     function usCountry(c) {
       return c == null || c == 'US';
     }
     function geoOk(data) {
       return usPoint(data.get('geoPoint', null)) && usCountry(data.get('countryCode', null));
+    }
+
+    // A seller's "buy N, get $X off" promo is display-only and never touches
+    // money, but its bounds are still enforced here so a crafted client can't
+    // post 'dollarsOff: 999999' as a banner gag. Absent or null is fine (no
+    // promo). Bounds mirror CFG.PROMO in js/config.js.
+    function promoOk(data) {
+      return !('promo' in data) || data.promo == null || (
+        data.promo is map
+        && data.promo.keys().hasOnly(['active', 'buyQty', 'dollarsOff'])
+        && data.promo.active is bool
+        && data.promo.buyQty is int
+        && data.promo.buyQty >= 2 && data.promo.buyQty <= 20
+        && data.promo.dollarsOff is number
+        && data.promo.dollarsOff > 0 && data.promo.dollarsOff <= 500
+      );
     }
 
     // ---- Staff -------------------------------------------------------------
@@ -118,7 +134,8 @@ service cloud.firestore {
         && request.resource.data.get('openReportCount', 0) == 0
         && request.resource.data.get('vip', false) == false
         && request.resource.data.get('staffRole', null) == null
-        && geoOk(request.resource.data);
+        && geoOk(request.resource.data)
+        && promoOk(request.resource.data);
 
       allow update: if isUser(uid)
         && !changed([
@@ -130,7 +147,8 @@ service cloud.firestore {
              'vip', 'vipUntil', 'vipGrantedAt', 'vipGrantedBy', 'vipReason',
              'staffRole'
            ])
-        && geoOk(request.resource.data);
+        && geoOk(request.resource.data)
+        && promoOk(request.resource.data);
 
       allow delete: if false;
 
@@ -162,10 +180,14 @@ service cloud.firestore {
     // ---- listings ----
 
     match /listings/{listingId} {
-      // Hidden (auto-report) and archived listings stay readable by their
-      // owner, so a seller can see what got flagged instead of finding it
-      // silently gone.
+      // 'active' and 'archived' (sold) are public: a seller's sold history
+      // shows on their profile as a track record. 'hidden' is the auto-report
+      // state and must NEVER open up this way -- a listing pulled for being a
+      // scam stays readable only to its owner (so they see what got flagged)
+      // and staff. That active/archived vs hidden split is the whole safety of
+      // making sold history public.
       allow read: if resource.data.status == 'active'
+        || resource.data.status == 'archived'
         || (signedIn() && resource.data.sellerId == request.auth.uid)
         || isStaff();
 

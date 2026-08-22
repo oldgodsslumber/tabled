@@ -9,7 +9,7 @@
  * "Saturday 10:00" is a wall-clock time, not an instant. It means 10:00 where
  * the SELLER is, because that's who has to be somewhere. But the buyer viewing
  * it may be in a different zone — a 50-mile radius crosses zone lines in
- * several US places, and shipping listings are nationwide — and the whole app
+ * several US places — and the whole app
  * is a scheduling tool, so being an hour off is the one failure that actually
  * wastes someone's afternoon.
  *

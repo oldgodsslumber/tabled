@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260821d';
+  var BUILD = '20260822a';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -103,11 +103,21 @@ window.CFG = (function () {
   ];
 
   /* ---- Fulfillment -------------------------------------------------------- */
+  /* Pickup-only. Tabled is local, in-person trading — there is no shipping
+   * path anywhere in the app, so a listing is met in person or handed over at
+   * an event, full stop. */
   var FULFILLMENT = [
     { key: 'pickup', label: 'Local pickup' },
-    { key: 'shipping', label: 'Will ship' },
     { key: 'inPersonAtEvent', label: 'In person at an event' }
   ];
+
+  /* ---- Seller promotion --------------------------------------------------
+   * A seller-declared "buy N, get $X off" deal. It is DISPLAYED, never applied:
+   * Tabled processes no payment, so the price and this discount alike are just
+   * signals the two people honor when they settle up in person. These bounds
+   * are echoed in firestore.rules (promoOk) so a modified client can't post an
+   * absurd banner. */
+  var PROMO = { minQty: 2, maxQty: 20, maxDollarsOff: 500 };
 
   /* ---- Geo-lock ----------------------------------------------------------
    * Tabled is US-only. The enforcement that matters is server-side, in
@@ -289,6 +299,7 @@ window.CFG = (function () {
 
   return {
     BUILD: BUILD,
+    PROMO: PROMO,
     CONDITIONS: CONDITIONS,
     TAGS: TAGS,
     BGG_CATEGORIES: BGG_CATEGORIES,

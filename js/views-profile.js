@@ -30,11 +30,30 @@ window.ProfileView = (function () {
         return;
       }
       draw(root, user, mine);
-      return loadListings(uid);
     }).catch(function (err) {
       console.error('[tabled] profile load failed', err);
       root.innerHTML = U.empty('Could not load that profile', '');
     });
+  }
+
+  /* Status words for a seller's own in-progress trades. Kept short because
+   * they sit as a chip next to the game name. */
+  var PROGRESS_LABEL = {
+    onHold: 'On hold', queued: 'In queue',
+    proposedTime: 'Time proposed', scheduled: 'Scheduled'
+  };
+
+  /* A live "buy N, get $X off" deal, or nothing. Only rendered when active, so
+   * a seller who toggled it off shows no stale banner. */
+  function promoBannerHtml(user) {
+    var pr = user.promo;
+    if (!pr || !pr.active) return '';
+    return '<div class="promo-banner">' +
+      '<span class="promo-mark">DEAL</span>' +
+      '<span>Buy ' + Number(pr.buyQty) + '+ and take <strong>$' +
+        Number(pr.dollarsOff) + ' off</strong> the total. Applied in person - ' +
+        'just mention it when you meet up.</span>' +
+    '</div>';
   }
 
   function draw(root, user, mine) {
@@ -44,14 +63,41 @@ window.ProfileView = (function () {
         ' from ' + U.esc(U.plural(user.reviewCount, 'review')) + '</span>'
       : '<span class="fine">No reviews yet</span>';
 
+    /* Section order differs by ownership. On your own profile the "in progress"
+     * block sits high because it's the thing you came to check; a visitor never
+     * sees it. Sold sits after active in both. */
+    var sections =
+      '<section class="block" data-sec="active">' +
+        '<h2>' + (mine ? 'For sale' : 'Active listings') +
+          ' <span class="count" id="c-active"></span></h2>' +
+        '<div class="grid" id="p-active">' + U.spinner('') + '</div>' +
+        '<div class="section-foot" id="foot-active"></div>' +
+      '</section>' +
+
+      (mine
+        ? '<section class="block" data-sec="progress">' +
+            '<h2>In progress <span class="count" id="c-progress"></span></h2>' +
+            '<div id="p-progress"></div>' +
+          '</section>'
+        : '') +
+
+      '<section class="block" data-sec="sold">' +
+        '<h2>Sold <span class="count" id="c-sold"></span></h2>' +
+        '<div class="grid sold-grid" id="p-sold">' + U.spinner('') + '</div>' +
+        '<div class="section-foot" id="foot-sold"></div>' +
+      '</section>' +
+
+      '<section class="block" data-sec="reviews">' +
+        '<h2>Reviews</h2>' +
+        '<div id="p-reviews">' + U.spinner('') + '</div>' +
+      '</section>';
+
     root.innerHTML =
       '<div class="profile">' +
         '<div class="profile-head">' +
           U.avatar(user, 'xl') +
           '<div class="grow">' +
-            '<h1>' + U.esc(user.displayName || 'Board gamer') +
-
-            '</h1>' +
+            '<h1>' + U.esc(user.displayName || 'Board gamer') + '</h1>' +
             '<p class="fine">' +
               (user.generalArea ? U.esc(user.generalArea) + ' · ' : '') +
               'Member since ' + U.esc(U.monthYear(user.createdAt)) +
@@ -67,6 +113,10 @@ window.ProfileView = (function () {
           '<div class="stat wide">' + rating + '</div>' +
         '</div>' +
 
+        /* The deal shows to everyone but the seller (they manage it in
+         * settings, where they also see a preview). */
+        (mine ? '' : promoBannerHtml(user)) +
+
         (blocked
           ? '<div class="banner warn">You have blocked this person. Their listings are hidden from your feed. ' +
             '<button class="linkish" id="unblock">Unblock</button></div>'
@@ -77,26 +127,25 @@ window.ProfileView = (function () {
               '<a class="btn ghost" href="#/settings">Edit profile</a>' +
               '<a class="btn" href="#/create">New listing</a>' +
             '</div>'
-          /* "Request a game" isn't a profile-level action — a request is
-           * always against one specific game entry. So this points at what
-           * they're selling rather than pretending to be a button that could
-           * work on its own. */
-          : '<div class="profile-actions">' +
-              '<a class="btn" href="#/feed?sellerId=' + U.attr(user.id) + '">See what they\'re selling</a>' +
-            '</div>') +
+          /* No "see what they're selling" button any more - their listings are
+           * right here on the page. */
+          : '') +
 
-        '<section class="block">' +
-          '<h2>' + (mine ? 'My active listings' : 'Active listings') + '</h2>' +
-          '<div class="grid" id="p-listings">' + U.spinner('') + '</div>' +
-        '</section>' +
-
-        '<section class="block">' +
-          '<h2>Reviews</h2>' +
-          '<div id="p-reviews">' + U.spinner('') + '</div>' +
-        '</section>' +
+        sections +
       '</div>';
 
     loadReviews(user.id);
+    if (mine) loadProgress(user.id);
+
+    /* Active first (it's what most visits are about); sold loads in parallel
+     * but renders into its own section. */
+    mountListings({ host: '#p-active', foot: '#foot-active', count: '#c-active',
+      sellerId: user.id, statuses: ['active'], mine: mine, sold: false,
+      empty: mine ? 'Nothing listed right now.' : 'No active listings.' });
+
+    mountListings({ host: '#p-sold', foot: '#foot-sold', count: '#c-sold',
+      sellerId: user.id, statuses: ['archived'], mine: mine, sold: true,
+      empty: mine ? 'Nothing sold yet.' : 'No completed sales yet.' });
 
     if (!mine) {
       Safety.wireMenu(root, {
@@ -111,18 +160,86 @@ window.ProfileView = (function () {
     });
   }
 
-  function loadListings(uid) {
-    return Store.queryListings({ sellerId: uid, sort: 'new', limit: 24 }).then(function (page) {
-      var host = U.$('#p-listings');
-      if (!host) return;
-      host.innerHTML = page.items.length
-        ? page.items.map(Feed.card).join('')
-        : U.empty('No active listings', '');
-    }).catch(function (err) {
-      console.error('[tabled] profile listings failed', err);
-      var host = U.$('#p-listings');
-      if (host) host.innerHTML = U.empty('Could not load listings', '');
+  /* A paginated listing section. Owns its own cursor and "Load more" so active
+   * and sold each page independently. The seller's own sold history and a
+   * visitor's both read the same archived docs - the rules now allow it. */
+  function mountListings(o) {
+    var host = U.$(o.host);
+    var foot = U.$(o.foot);
+    var countEl = U.$(o.count);
+    if (!host) return;
+    var items = [];
+    var cursor = null;
+    var loading = false;
+
+    function paint(exhausted) {
+      host.innerHTML = items.length
+        ? items.map(function (l) { return Feed.card(l); }).join('')
+        : '<p class="fine">' + U.esc(o.empty) + '</p>';
+      if (countEl) countEl.textContent = items.length
+        ? (items.length + (exhausted ? '' : '+')) : '';
+      if (foot) {
+        foot.innerHTML = (!exhausted && items.length)
+          ? '<button class="btn ghost small" data-more>Load more</button>' : '';
+        var b = U.$('[data-more]', foot);
+        if (b) b.addEventListener('click', next);
+      }
+    }
+
+    function next() {
+      if (loading) return;
+      loading = true;
+      var b = foot && U.$('[data-more]', foot);
+      if (b) { b.disabled = true; b.textContent = 'Loading…'; }
+      Store.queryListings({
+        sellerId: o.sellerId, statuses: o.statuses, sort: 'new', limit: 12
+      }, cursor).then(function (page) {
+        cursor = page.cursor;
+        items = items.concat(page.items);
+        loading = false;
+        paint(page.exhausted);
+      }).catch(function (err) {
+        console.error('[tabled] profile listings failed', o.statuses, err);
+        loading = false;
+        host.innerHTML = U.empty('Could not load listings', '');
+      });
+    }
+
+    next();
+  }
+
+  /* The seller's own mid-trade items, read from the live requests list rather
+   * than a query - the app already subscribes to it, so this costs nothing.
+   * Buyers never see this; it's a private "what's in flight" view. */
+  function loadProgress(uid) {
+    var host = U.$('#p-progress');
+    var countEl = U.$('#c-progress');
+    if (!host) return;
+    var rows = (Store.myRequests() || []).filter(function (r) {
+      return r.sellerId === uid && CFG.isOpenRequest(r.status);
+    }).sort(function (a, b) {
+      return (U.toDate(b.updatedAt) || 0) - (U.toDate(a.updatedAt) || 0);
     });
+
+    if (countEl) countEl.textContent = rows.length || '';
+    if (!rows.length) {
+      host.innerHTML = '<p class="fine">No trades in progress. When a buyer requests ' +
+        'one of your games, it shows here until the trade is done.</p>';
+      return;
+    }
+    host.innerHTML = '<ul class="progress-list">' + rows.map(function (r) {
+      var cover = U.safeUrl(r.coverPhoto);
+      return '<li><a class="progress-row" href="#/thread/' + U.attr(r.id) + '">' +
+        '<span class="progress-thumb' + (cover ? '' : ' noimg') + '"' +
+          (cover ? ' style="background-image:url(' + U.attr(cover) + ')"' : '') + '>' +
+          (cover ? '' : U.esc(U.initials(r.gameName || 'Game'))) + '</span>' +
+        '<span class="grow">' +
+          '<strong>' + U.esc(r.gameName || 'Game') + '</strong>' +
+          '<span class="fine">with ' + U.esc(r.buyerName || 'a buyer') + '</span>' +
+        '</span>' +
+        '<span class="badge">' + U.esc(PROGRESS_LABEL[r.status] || r.status) + '</span>' +
+      '</a></li>';
+    }).join('') + '</ul>';
   }
 
   /* Reviews are fetch-once: they never change after posting, so a live
@@ -207,6 +324,8 @@ window.ProfileView = (function () {
 
         availabilitySection(me) +
 
+        promoSection(me) +
+
         '<section class="block">' +
           '<h2>Blocked people</h2>' +
           '<div id="blocked-list">' +
@@ -234,6 +353,7 @@ window.ProfileView = (function () {
 
     if (blockedIds.length) drawBlocked(blockedIds);
     wireAvailability(root);
+    wirePromo(root);
 
     U.$('#s-out', root).addEventListener('click', function () { App.signOut(); });
 
@@ -384,6 +504,110 @@ window.ProfileView = (function () {
         U.toast('Could not save availability', 'bad');
         btn.disabled = false;
         btn.textContent = 'Save availability';
+      });
+    });
+  }
+
+  /* ---- Seller promotion (buy N, get $X off) -------------------------------
+   * Display-only: Tabled processes no money, so this is a signal the two people
+   * honor in person, exactly like the asking price. Bounds mirror CFG.PROMO and
+   * are re-checked in firestore.rules, so a hand-crafted write can't post an
+   * absurd banner. Stored as { active, buyQty, dollarsOff }; toggling off keeps
+   * the numbers but sets active:false, so turning it back on doesn't re-ask. */
+  function promoSection(me) {
+    var pr = me.promo || { active: false, buyQty: CFG.PROMO.minQty, dollarsOff: 5 };
+    var on = !!pr.active;
+    return '<section class="block">' +
+      '<h2>Bundle deal</h2>' +
+      '<p class="fine">Offer a "buy several, save a bit" deal across all your ' +
+        'listings. It shows on your profile and in your chats. Nothing is charged ' +
+        'here — you and the buyer just apply it when you meet up, the same as ' +
+        'the price.</p>' +
+      '<label class="promo-toggle">' +
+        '<input type="checkbox" id="promo-on"' + (on ? ' checked' : '') + '>' +
+        '<span>Offer a bundle deal</span>' +
+      '</label>' +
+      '<div class="promo-fields"' + (on ? '' : ' hidden') + ' id="promo-fields">' +
+        '<div class="promo-line">' +
+          '<span>Buy at least</span>' +
+          '<input type="number" id="promo-qty" min="' + CFG.PROMO.minQty + '" ' +
+            'max="' + CFG.PROMO.maxQty + '" step="1" value="' +
+            U.attr(String(pr.buyQty || CFG.PROMO.minQty)) + '">' +
+          '<span>games, get</span>' +
+          '<input type="number" id="promo-off" min="1" max="' + CFG.PROMO.maxDollarsOff +
+            '" step="1" value="' + U.attr(String(pr.dollarsOff || 5)) + '">' +
+          '<span>dollars off the total.</span>' +
+        '</div>' +
+        '<p class="fine promo-preview" id="promo-preview"></p>' +
+      '</div>' +
+      '<button class="btn ghost small" id="promo-save">Save deal</button>' +
+    '</section>';
+  }
+
+  function promoPreview(root) {
+    var el = U.$('#promo-preview', root);
+    if (!el) return;
+    var qty = Number(U.$('#promo-qty', root).value);
+    var off = Number(U.$('#promo-off', root).value);
+    el.textContent = (qty >= CFG.PROMO.minQty && off > 0)
+      ? 'Buyers will see: "Buy ' + qty + '+ and take $' + off + ' off the total."'
+      : '';
+  }
+
+  function wirePromo(root) {
+    var toggle = U.$('#promo-on', root);
+    if (!toggle) return;
+    var fields = U.$('#promo-fields', root);
+    var qty = U.$('#promo-qty', root);
+    var off = U.$('#promo-off', root);
+
+    toggle.addEventListener('change', function () {
+      fields.hidden = !toggle.checked;
+    });
+    [qty, off].forEach(function (i) {
+      i.addEventListener('input', function () { promoPreview(root); });
+    });
+    promoPreview(root);
+
+    U.$('#promo-save', root).addEventListener('click', function () {
+      var btn = this;
+      var active = toggle.checked;
+      var q = Math.round(Number(qty.value));
+      var d = Math.round(Number(off.value));
+
+      /* Validate only when the deal is ON. An off deal can save with whatever
+       * numbers are in the boxes -- they're just remembered for next time. */
+      if (active) {
+        if (!(q >= CFG.PROMO.minQty && q <= CFG.PROMO.maxQty)) {
+          U.toast('"Buy at least" must be between ' + CFG.PROMO.minQty + ' and ' +
+            CFG.PROMO.maxQty + '.', 'warn');
+          return;
+        }
+        if (!(d > 0 && d <= CFG.PROMO.maxDollarsOff)) {
+          U.toast('Dollars off must be between $1 and $' + CFG.PROMO.maxDollarsOff + '.', 'warn');
+          return;
+        }
+      }
+
+      /* Clamp the stored values even when inactive, so a later toggle-on can't
+       * activate out-of-range numbers the rules would then reject. */
+      var promo = {
+        active: active,
+        buyQty: Math.min(CFG.PROMO.maxQty, Math.max(CFG.PROMO.minQty, q || CFG.PROMO.minQty)),
+        dollarsOff: Math.min(CFG.PROMO.maxDollarsOff, Math.max(1, d || 1))
+      };
+
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      Store.saveProfile({ promo: promo }).then(function () {
+        U.toast(active ? 'Bundle deal is live' : 'Bundle deal turned off');
+        btn.disabled = false;
+        btn.textContent = 'Save deal';
+      }).catch(function (err) {
+        console.error('[tabled] promo save failed', err);
+        U.toast('Could not save the deal', 'bad');
+        btn.disabled = false;
+        btn.textContent = 'Save deal';
       });
     });
   }

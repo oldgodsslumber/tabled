@@ -37,7 +37,7 @@ window.CreateView = (function () {
     if (!editingId) {
       draft = {
         title: '',
-        fulfillment: { pickup: true, shipping: false, inPersonAtEvent: false },
+        fulfillment: { pickup: true, inPersonAtEvent: false },
         /* Location defaults to the seller's profile area — copied onto the
          * listing at creation time rather than referenced, so later changing
          * where you live never silently moves every listing you ever made. */
@@ -58,7 +58,7 @@ window.CreateView = (function () {
       return Store.getEntries(editingId).then(function (es) {
         draft = {
           title: l.title || '',
-          fulfillment: Object.assign({ pickup: true, shipping: false, inPersonAtEvent: false }, l.fulfillment || {}),
+          fulfillment: Object.assign({ pickup: true, inPersonAtEvent: false }, l.fulfillment || {}),
           locationLabel: l.locationLabel || '',
           geoPoint: l.geoPoint || null,
           geohash: l.geohash || null,
@@ -822,7 +822,7 @@ window.CreateView = (function () {
   function validate() {
     var real = draft.entries.filter(function (e) { return e.bggId || (e.name || '').trim(); });
     if (!real.length) return 'Add at least one game.';
-    if (!draft.fulfillment.pickup && !draft.fulfillment.shipping && !draft.fulfillment.inPersonAtEvent) {
+    if (!draft.fulfillment.pickup && !draft.fulfillment.inPersonAtEvent) {
       return 'Pick at least one way buyers can get it.';
     }
     if (draft.fulfillment.pickup && !draft.locationLabel.trim()) {

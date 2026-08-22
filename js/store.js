@@ -158,8 +158,14 @@ window.Store = (function () {
     var wantTags = f.tags && f.tags.length ? f.tags : null;
 
     return function (items) {
+      /* Which listing states this query wants. Default is active-only, which
+       * is what the feed and every distance/search path expects. A profile
+       * asks for ['archived'] to show sold history. 'hidden' is never listable
+       * this way -- it is owner/staff-only and only reachable by direct id. */
+      var wantStatuses = (f.statuses && f.statuses.length) ? f.statuses : ['active'];
+
       var out = items.filter(function (l) {
-        if (l.status !== 'active') return false;
+        if (wantStatuses.indexOf(l.status) === -1) return false;
         if (blockedSet[l.sellerId]) return false;
 
         if (f.sellerId && l.sellerId !== f.sellerId) return false;
@@ -308,6 +314,9 @@ window.Store = (function () {
          * is a wall-clock time and means nothing without one. */
         if (patch.availabilityWindows !== undefined) writable.availabilityWindows = patch.availabilityWindows;
         if (patch.timeZone !== undefined) writable.timeZone = patch.timeZone;
+        /* Seller "buy N, get $X off" promo. Display-only; the rules enforce its
+         * bounds. null clears it. */
+        if (patch.promo !== undefined) writable.promo = patch.promo;
         return fb.updateDoc(docRef('users', uid), writable);
       },
 
@@ -501,7 +510,13 @@ window.Store = (function () {
           });
         }
 
-        var clauses = [fb.where('status', '==', 'active')];
+        /* Status clause. Active-only by default; a profile's sold section
+         * passes statuses:['archived']. One status uses '==' (no extra index);
+         * a set uses 'in'. The pipeline re-checks either way. */
+        var statuses = (f.statuses && f.statuses.length) ? f.statuses : ['active'];
+        var clauses = [statuses.length === 1
+          ? fb.where('status', '==', statuses[0])
+          : fb.where('status', 'in', statuses)];
         var term = f.q ? searchTerm(f.q) : null;
 
         /* Exactly one array-contains is allowed per query, so text search wins
@@ -1021,13 +1036,13 @@ window.Store = (function () {
         listings.push(l);
       }
 
-      mk('demo_ava', 3, 'Shelf cleanout — heavy euros', { pickup: true, shipping: true, inPersonAtEvent: false },
+      mk('demo_ava', 3, 'Shelf cleanout — heavy euros', { pickup: true, inPersonAtEvent: false },
         [['224517', 'LN', ['Sleeved cards', 'Smoke-free home'], 45], ['167791', 'VG', ['Punched', '3D-printed insert'], 40]], 88, 3);
-      mk('demo_theo', 20, '', { pickup: true, shipping: false, inPersonAtEvent: false },
+      mk('demo_theo', 20, '', { pickup: true, inPersonAtEvent: false },
         [['174430', 'G', ['Punched', 'All expansions included', 'Painted minis'], 85]], 210, 1);
-      mk('demo_nell', 50, 'Light games, great shape', { pickup: true, shipping: true, inPersonAtEvent: false },
+      mk('demo_nell', 50, 'Light games, great shape', { pickup: true, inPersonAtEvent: false },
         [['266192', 'LN', ['Sleeved cards', 'Pet-free home'], 32], ['295947', 'NIS', [], 26]], 41, 2);
-      mk('demo_ava', 120, '', { pickup: false, shipping: true, inPersonAtEvent: false },
+      mk('demo_ava', 120, '', { pickup: true, inPersonAtEvent: false },
         [['295947', 'VG', ['Premium playmat'], 18]], 132, 5);
 
       var users = {};
@@ -1078,7 +1093,7 @@ window.Store = (function () {
          * it — the in-memory profile and the stored one diverge, and the bug
          * only surfaces on reload or when someone else reads the profile. */
         ['displayName', 'bio', 'photoURL', 'generalArea', 'geoPoint', 'geohash',
-          'countryCode', 'state', 'availabilityWindows', 'timeZone'].forEach(function (k) {
+          'countryCode', 'state', 'availabilityWindows', 'timeZone', 'promo'].forEach(function (k) {
           if (patch[k] !== undefined) u[k] = patch[k];
         });
         db.users[uid] = u;
@@ -1455,6 +1470,12 @@ window.Store = (function () {
           if (r) Object.keys(patch).forEach(function (k) { r[k] = patch[k]; });
         } else if (kind === 'meetingExpiry') {
           if (db.meetingDetails && db.meetingDetails[id]) db.meetingDetails[id].expireAtMs = patch;
+        } else if (kind === 'listing') {
+          var l = db.listings.filter(function (x) { return x.id === id; })[0];
+          if (l) Object.keys(patch).forEach(function (k) { l[k] = patch[k]; });
+        } else if (kind === 'user') {
+          var u = db.users[id];
+          if (u) Object.keys(patch).forEach(function (k) { u[k] = patch[k]; });
         }
         save();
         return Promise.resolve();

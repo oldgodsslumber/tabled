@@ -275,7 +275,7 @@ window.ThreadView = (function () {
     } else if (req.status === 'proposedTime') {
       var byMe = req.proposedBy === Store.uid();
       var when = U.esc(whenLabel(req.proposedTime));
-      var how = req.method === 'shipping' ? 'ship' : 'meet up';
+      var how = 'meet up';
 
       html =
         '<div class="sched proposed">' +
@@ -305,7 +305,7 @@ window.ThreadView = (function () {
         '<div class="sched confirmed">' +
           '<p class="sched-state">✓ Confirmed for <strong>' +
             U.esc(whenLabel(req.scheduledTime)) + '</strong>' +
-            (req.method === 'shipping' ? ' — shipping' : ' — meeting up') + '</p>' +
+            ' — meeting up</p>' +
           (mineDone
             ? '<p class="fine">You\'ve marked this done. Waiting on ' +
               U.esc(otherName) + ' to confirm before it counts.</p>'
@@ -506,7 +506,6 @@ window.ThreadView = (function () {
     var d = new Date(now.getTime() + 86400000);
     d.setHours(18, 0, 0, 0);
     var localValue = toLocalInput(d);
-    var canShip = true;
 
     var m = U.modal('Propose a time',
       '<label class="field">' +
@@ -514,27 +513,16 @@ window.ThreadView = (function () {
         '<input id="p-when" type="datetime-local" value="' + U.attr(localValue) + '" ' +
           'min="' + U.attr(toLocalInput(now)) + '">' +
       '</label>' +
-      '<div class="field">' +
-        '<span>How</span>' +
-        '<div class="chip-row">' +
-          '<button class="chip on" data-method="pickup">Meet up</button>' +
-          (canShip ? '<button class="chip" data-method="shipping">Ship it</button>' : '') +
-        '</div>' +
-        '<span class="fine">Shipping addresses are exchanged here in chat — Tabled never ' +
-          'stores one.</span>' +
-      '</div>' +
+      '<p class="fine">You\'ll meet up in person to hand it over. Sort out where in ' +
+        'chat once the time is set.</p>' +
       '<div class="modal-actions">' +
         '<button class="btn ghost" data-act="no">Cancel</button>' +
         '<button class="btn" data-act="go">Propose</button>' +
       '</div>');
 
+    /* Pickup is the only method Tabled supports; it's still written onto the
+     * request so the data model and the scheduling functions are unchanged. */
     var method = 'pickup';
-    U.on(m.el, '[data-method]', function (e, t) {
-      method = t.dataset.method;
-      U.$$('[data-method]', m.el).forEach(function (b) {
-        b.classList.toggle('on', b.dataset.method === method);
-      });
-    });
 
     U.on(m.el, '[data-act]', function (e, t) {
       if (t.dataset.act === 'no') { m.close(); return; }
@@ -562,8 +550,7 @@ window.ThreadView = (function () {
          * a header the other person has to notice is a scheduling change that
          * gets missed. */
         return Store.sendMessage(req.id,
-          'Proposed ' + whenLabel(when) + ' — ' +
-          (method === 'shipping' ? 'shipping' : 'meet up') + '.');
+          'Proposed ' + whenLabel(when) + ' — meet up.');
       }).catch(function (err) {
         console.error('[tabled] propose failed', err);
         U.toast('Could not propose that time', 'bad');
@@ -620,20 +607,11 @@ window.ThreadView = (function () {
   }
 
   /* ---- Meeting toolkit (privacy & safety) ---------------------------------
-   * Sits under a confirmed pickup. The address is never typed into the chat —
+   * Sits under a confirmed meetup. The address is never typed into the chat —
    * it is released through a one-time card, read once, and cleared on pickup.
    * A safe public place can be picked instead, which sidesteps sharing a home
    * address at all. */
   function meetingToolkit(req) {
-    if (req.method === 'shipping') {
-      return '<div class="sched meet-toolkit">' +
-        '<p class="fine"><strong>Shipping.</strong> Share the delivery address ' +
-        'with the seller when you\'re both ready. Shipping means giving a ' +
-        'stranger your address \u2014 there\'s no way around that part.</p>' +
-        '<button class="btn ghost small" data-act="share-address">Share my address</button>' +
-        addressPendingFor(req) +
-      '</div>';
-    }
     return '<div class="sched meet-toolkit">' +
       '<p class="fine"><strong>Meeting up.</strong> Pick somewhere public, or ' +
       'share an address only when you\'re actually on your way.</p>' +
