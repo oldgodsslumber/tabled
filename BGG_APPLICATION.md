@@ -8,47 +8,52 @@ long pole — send it before building anything that depends on it.
 
 ---
 
-## Answer honestly: this is a **commercial** application
+## This is a non-commercial application
 
-BGG's own definition: *"if your application will be showing advertising or
-offering users any benefit in exchange for payment, it is considered
-commercial."*
+Tabled charges nothing and makes no money. It takes no payment from users, runs
+no advertising, and accepts no donations. It is a free hobby project.
 
-Tabled charges sellers $0.25 per completed trade to keep a "Verified" badge
-current. That is a user payment, so it's commercial — even though the fee is
-currently waived until 31 December 2026 and no money has changed hands.
+That matters for two reasons. First, BGG's commercial test is specifically about
+money: *"if your application will be showing advertising or offering users any
+benefit in exchange for payment, it is considered commercial."* Tabled offers no
+benefit in exchange for anything, so it is non-commercial by their own
+definition — and non-commercial applications are the easier, faster approval
+path.
 
-Declaring non-commercial to get a faster approval would be a
-misrepresentation that could get the licence withdrawn later, which is far
-worse than waiting.
+Second, an application that competes with BGG's business is the main reason they
+decline (see below). "Competes with their business" is a far weaker charge
+against something with no business at all — no revenue, nothing to compete
+*for*.
 
-Their stated policy for payment-monetized apps: *"we usually offer a free
-commercial license until you have 100 paying users."* So this should cost
-nothing for a long while.
+**Say this accurately on the form.** Not "free for now" — free, full stop. There
+is no fee mechanism in the code, waived or otherwise. Overclaiming
+non-commercial status you don't have would be a misrepresentation; here the
+plain truth is also the favourable answer.
 
-## Be aware of the real risk before you send it
+## The real risk before you send it
 
 BGG reserve the right to decline: *"any application which, in our judgment,
 competes with any part of BGG's business, or which harms us in any way, may
 be denied."*
 
-**BGG runs its own marketplace. Tabled is a marketplace.** They may read that
-as competing. The draft below leans into the difference — local, in-person,
-no payment processing, no shipping infrastructure — because that difference
-is real and is the strongest honest case. It is not a guarantee.
+**BGG runs its own marketplace. Tabled is a marketplace.** They may still read
+that as competing, even with no money involved. The draft below leans into the
+difference — local, in-person, no payment of any kind, no shipping — because
+that difference is real and is the strongest honest case. It is not a guarantee.
 
-If they decline, the manual-entry path already built becomes the product
-rather than the fallback, and Phases 2 and 4 don't happen.
+If they decline, the manual-entry path already built becomes the product rather
+than the fallback, and Phases 2 and 4 don't happen.
 
 ---
 
 ## Draft — application description
 
-> Tabled is a mobile-first web app for buying, selling and trading used board
-> games **locally and in person**, within the United States only. It exists to
-> replace the two places this currently happens badly: Facebook Marketplace
-> listings with no structured game data, and BGG forum threads used to
-> coordinate before conventions.
+> Tabled is a free, mobile-first web app for buying, selling and trading used
+> board games **locally and in person**, within the United States only. It is a
+> hobby project with no revenue: no fees, no advertising, no donations. It
+> exists to replace the two places this currently happens badly — Facebook
+> Marketplace listings with no structured game data, and BGG forum threads used
+> to coordinate before conventions.
 >
 > **How BGG data would be used.** On listing creation, a seller searches for
 > the game they're selling and picks the matching entry. We call `search`
@@ -67,13 +72,14 @@ rather than the fallback, and Phases 2 and 4 don't happen.
 > **On overlap with the BGG Marketplace.** Tabled is deliberately local and
 > in-person: listings are geo-restricted to the United States, discovery is by
 > distance from the buyer, and the app coordinates meeting up — including
-> scheduling around a specific convention. Tabled never processes payment for
-> a game; money changes hands directly between the two people, and the app has
-> no payment rails, no shipping labels and no carrier integration. It is a way
-> for people in the same town to find each other, not a storefront. If you
-> consider any part of this to overlap with the BGG Marketplace in a way you
-> aren't comfortable with, we would genuinely rather hear that now and adjust
-> than proceed on a misunderstanding.
+> scheduling around a specific convention. Tabled never touches money for a
+> game at all; the sale happens directly between the two people, and the app has
+> no payment rails, no shipping labels and no carrier integration. Nor does
+> Tabled make money itself — there is no fee, subscription, advertising or
+> donation anywhere in it. It is a way for people in the same town to find each
+> other, not a storefront. If you consider any part of this to overlap with the
+> BGG Marketplace in a way you aren't comfortable with, we would genuinely
+> rather hear that now and adjust than proceed on a misunderstanding.
 
 ## Fields you'll likely be asked for
 
@@ -81,8 +87,8 @@ rather than the fallback, and Phases 2 and 4 don't happen.
 |---|---|
 | Application name | Tabled |
 | URL | https://github.com/oldgodsslumber/tabled (add the live URL once hosted) |
-| Type | Commercial |
-| Monetization | User payments — $0.25 per completed trade, currently waived until 2026-12-31 |
+| Type | **Non-commercial** |
+| Monetization | None — no fees, advertising or donations |
 | Approximate users | Pre-launch, zero |
 | Server or client calls | Server-side, from Firebase Cloud Functions |
 
