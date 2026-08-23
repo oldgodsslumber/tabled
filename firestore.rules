@@ -244,6 +244,21 @@ service cloud.firestore {
 
     // ---- games (BGG cache) ----
 
+    // gameSubmissions: a harvest log of games entered by hand during testing --
+    // titles that aren't in BGG or Wikidata, so their data would otherwise
+    // vanish with the listing. Append-only and staff-read; the reset script
+    // (admin SDK) exports and clears it at the BGG cutover. Constrained to no
+    // price field, so it can never feed a Good Deal ranking even by accident.
+    match /gameSubmissions/{id} {
+      allow read: if isStaff();
+      allow create: if signedIn()
+        && request.resource.data.submittedBy == request.auth.uid
+        && request.resource.data.source == 'manual'
+        && request.resource.data.keys().hasOnly(
+             ['name', 'categories', 'source', 'submittedBy', 'submittedAt']);
+      allow update, delete: if false;
+    }
+
     match /games/{bggId} {
       // Read by everyone -- categories and mechanics drive the feed filters.
       //

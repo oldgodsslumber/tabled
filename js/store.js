@@ -466,6 +466,24 @@ window.Store = (function () {
           if (g && g.source === 'wikidata') batch.set(docRef('games', gid), g);
         });
 
+        /* Harvest hand-entered games (no bggId -- not in BGG or Wikidata) into a
+         * submissions log so their data survives the listing. Create-only, to
+         * avoid re-logging on every edit. This is testing-era collection; the
+         * reset script exports and clears it when BGG becomes the source. */
+        if (isNew) {
+          entries.forEach(function (e) {
+            var nm = (e.name || '').trim();
+            if (e.bggId || !nm) return;
+            batch.set(fb.doc(col('gameSubmissions')), {
+              name: nm,
+              categories: CFG.normalizeCategories(e.categories || []),
+              source: 'manual',
+              submittedBy: listing.sellerId,
+              submittedAt: fb.serverTimestamp()
+            });
+          });
+        }
+
         /* Entries removed during an edit have to be deleted explicitly —
          * overwriting the parent doesn't touch the subcollection. */
         var pruned = Promise.resolve([]);
@@ -1211,6 +1229,20 @@ window.Store = (function () {
         Object.keys(gamesById || {}).forEach(function (gid) {
           db.games[gid] = clone(gamesById[gid]);
         });
+
+        /* Mirror the cloud harvest of hand-entered games (create only). */
+        if (!existing) {
+          db.gameSubmissions = db.gameSubmissions || [];
+          entries.forEach(function (e) {
+            var nm = (e.name || '').trim();
+            if (e.bggId || !nm) return;
+            db.gameSubmissions.push({
+              id: U.uid('sub_'), name: nm,
+              categories: CFG.normalizeCategories(e.categories || []),
+              source: 'manual', submittedBy: l.sellerId, submittedAt: Date.now()
+            });
+          });
+        }
 
         /* Seed the same hold/queue defaults the cloud path writes. Leaving them
          * undefined here would let the demo backend produce entries the M5
