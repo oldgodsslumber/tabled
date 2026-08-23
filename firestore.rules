@@ -128,7 +128,10 @@ service cloud.firestore {
       allow create: if isUser(uid)
         && request.resource.data.tradeCount == 0
         && request.resource.data.reviewCount == 0
-        && request.resource.data.verifiedSeller == false
+        // verifiedSeller was removed with the Verified badge, so the client no
+        // longer writes it. Tolerate its absence (defaulting false) while still
+        // rejecting a self-granted true -- matching the vip/restricted pattern.
+        && request.resource.data.get('verifiedSeller', false) == false
         && request.resource.data.avgRating == null
         && request.resource.data.get('restricted', false) == false
         && request.resource.data.get('openReportCount', 0) == 0
