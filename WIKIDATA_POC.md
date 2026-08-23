@@ -43,13 +43,22 @@ live project too, not just demo.
   cache key.
 - One SPARQL call returns candidates *with* details — a single round trip where
   BGG needed two.
+- **Two ways in, UNION'd: the "board game" class OR a BoardGameGeek id (P2339).**
+  The BGG-id branch is the important one — it's the strongest signal that an
+  entity is a real, tradeable tabletop game, and it rescues titles filed under a
+  *neighbouring* class. Azul, for example, is tagged "tabletop game" (the parent
+  of "board game", so even a subclass walk can't reach it) but carries BGG id
+  230802, so it's found anyway. This is also why the reachable set is larger
+  than a pure class match suggests.
 
 ## What it can't do (be honest about these when showing it)
 
-- **Coverage is ~4,000 games vs BGG's 150,000+.** The long tail is thin, and
-  even a top-10 game can be missing — **Azul isn't in Wikidata as a board game**
-  (it's overshadowed by an Argentine city, albums, a Mars crater). Manual entry
-  backs up anything absent.
+- **Coverage is a few thousand games vs BGG's 150,000+.** The long tail is thin.
+  A title can still be missing entirely — it isn't in Wikidata, or it's there
+  with neither the board-game class nor a BGG id — and manual entry backs up
+  anything absent. (This is also editable: Azul *was* unreachable until someone
+  added the right statements to its Wikidata item, which is the flip side of an
+  open source — the gaps are fixable, by anyone, including us.)
 - **No box art, reliably.** Wikidata's image property is often a components
   photo or even the designer's portrait, not the cover. The code shows whatever
   image exists; sometimes that's nothing useful.
