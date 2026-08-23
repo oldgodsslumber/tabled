@@ -314,7 +314,7 @@ window.ProfileView = (function () {
 
         '<label class="field">' +
           '<span>ZIP code</span>' +
-          '<input id="s-area" type="text" inputmode="numeric" maxlength="5" ' +
+          '<input id="s-area" type="tel" inputmode="numeric" maxlength="5" ' +
             'autocomplete="postal-code" pattern="[0-9]{5}" placeholder="02139" ' +
             'value="' + U.attr(me.generalArea || '') + '">' +
           '<span class="fine">Used for distance search, and shown to others as the ZIP. ' +
@@ -666,7 +666,7 @@ window.ProfileView = (function () {
 
         '<label class="field">' +
           '<span>Your ZIP code</span>' +
-          '<input id="ob-area" type="text" inputmode="numeric" maxlength="5" ' +
+          '<input id="ob-area" type="tel" inputmode="numeric" maxlength="5" ' +
             'autocomplete="postal-code" pattern="[0-9]{5}" placeholder="02139" ' +
             'value="' + U.attr(me.generalArea || '') + '">' +
           '<span class="fine">Listings search by distance from your ZIP. It becomes a ' +
