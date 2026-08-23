@@ -447,6 +447,20 @@ window.Store = (function () {
           });
         });
 
+        /* Cache any Wikidata-sourced game onto games/{id}. In BGG mode the
+         * getGameDetails function writes this as a side effect; the Wikidata
+         * path is client-side and has no such function, so without this a
+         * Wikidata game would lose its box art and per-game categories on the
+         * listing detail (the feed still works — coverPhoto and categories are
+         * denormalized onto the listing by the rollup). Only a wikidata game
+         * with no suggestedPrice is client-writable, and the rules enforce
+         * exactly that, which closes the cache's one abuse: a faked price
+         * manufacturing a permanent Good Deal ranking. */
+        Object.keys(gamesById || {}).forEach(function (gid) {
+          var g = gamesById[gid];
+          if (g && g.source === 'wikidata') batch.set(docRef('games', gid), g);
+        });
+
         /* Entries removed during an edit have to be deleted explicitly —
          * overwriting the parent doesn't touch the subcollection. */
         var pruned = Promise.resolve([]);
@@ -1073,11 +1087,21 @@ window.Store = (function () {
 
       ensureProfile: function (authUser) {
         if (!db.users[authUser.uid]) {
+          /* Pre-seeded with an area near the demo world's centre (Jacksonville),
+           * because a listing now takes its location from the seller's profile
+           * -- with no area the demo user couldn't post, and would be bounced
+           * into onboarding on every load. A real new account starts with a
+           * blank area and IS sent through onboarding; this is a demo affordance
+           * only. */
           db.users[authUser.uid] = {
             id: authUser.uid,
             displayName: authUser.displayName || 'You (demo)',
             photoURL: authUser.photoURL || null,
-            bio: '', generalArea: '', geoPoint: null, geohash: null,
+            bio: '',
+            generalArea: 'Riverside, Jacksonville',
+            geoPoint: { lat: 30.3125, lng: -81.6795 },
+            geohash: Geo.encode(30.3125, -81.6795, 9),
+            countryCode: 'US', state: 'FL',
             createdAt: Date.now(), tradeCount: 0, avgRating: null, reviewCount: 0,
             availabilityWindows: [], openReportCount: 0, restricted: false
           };
@@ -1173,6 +1197,15 @@ window.Store = (function () {
         var rollup = buildRollup(l, entries, gamesById);
         Object.keys(rollup).forEach(function (k) { l[k] = rollup[k]; });
         l.hotScore = hotScore(l);
+
+        /* Persist the game data the seller looked up, so the listing detail can
+         * render its image and categories later. In cloud mode getGameDetails
+         * writes games/{bggId} as a side effect; demo mode has no such write, so
+         * without this a Wikidata- or BGG-sourced game would lose its image and
+         * categories the moment the create form closed. */
+        Object.keys(gamesById || {}).forEach(function (gid) {
+          db.games[gid] = clone(gamesById[gid]);
+        });
 
         /* Seed the same hold/queue defaults the cloud path writes. Leaving them
          * undefined here would let the demo backend produce entries the M5
@@ -2061,6 +2094,13 @@ window.Store = (function () {
     me: function () { return myProfile; },
     setMe: function (p) { myProfile = p; notify(); },
     isMe: function (uid) { return !!myUid && myUid === uid; },
+
+    /* A signed-in account that hasn't set its general area yet. The area is now
+     * required -- listings inherit their location from it -- so a new account
+     * is routed through onboarding until this is false, then never again. */
+    needsOnboarding: function () {
+      return !!myUid && !((myProfile && myProfile.generalArea) || '').trim();
+    },
 
     /* Cosmetic only. Decides which controls render; never what is permitted. */
     role: function () { return myRole; },

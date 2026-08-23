@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260822a';
+  var BUILD = '20260823a';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -118,6 +118,14 @@ window.CFG = (function () {
    * are echoed in firestore.rules (promoOk) so a modified client can't post an
    * absurd banner. */
   var PROMO = { minQty: 2, maxQty: 20, maxDollarsOff: 500 };
+
+  /* ---- Game data source --------------------------------------------------
+   * Which catalogue the create form searches. 'wikidata' is the default while
+   * BoardGameGeek's API stays behind an approval wall we may never clear -- it
+   * works client-side with no token. The `?source=` URL param still overrides
+   * this per-visit (see js/bgg.js), so flipping back to BGG later is one edit
+   * here. */
+  var GAME_SOURCE = 'wikidata';
 
   /* ---- Geo-lock ----------------------------------------------------------
    * Tabled is US-only. The enforcement that matters is server-side, in
@@ -300,6 +308,7 @@ window.CFG = (function () {
   return {
     BUILD: BUILD,
     PROMO: PROMO,
+    GAME_SOURCE: GAME_SOURCE,
     CONDITIONS: CONDITIONS,
     TAGS: TAGS,
     BGG_CATEGORIES: BGG_CATEGORIES,

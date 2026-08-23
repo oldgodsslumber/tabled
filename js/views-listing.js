@@ -105,10 +105,7 @@ window.ListingView = (function () {
           }).join('') +
         '</div>' +
 
-        (Object.keys(games).length
-          ? '<p class="bgg-attrib"><a href="https://boardgamegeek.com" target="_blank" ' +
-            'rel="noopener noreferrer">Powered by BGG</a></p>'
-          : '') +
+        dataAttribution(games) +
 
         sellerCard(l) +
 
@@ -168,6 +165,21 @@ window.ListingView = (function () {
     }, 0);
     if (total === entries.length) return U.plural(total, 'game');
     return U.plural(total, 'game') + ' in ' + U.plural(entries.length, 'lot');
+  }
+
+  /* Attribution keyed to where the game data actually came from. Wikidata and
+   * BGG each require crediting them, and crediting the wrong one is both a
+   * licence problem and simply false. */
+  function dataAttribution(games) {
+    var keys = Object.keys(games || {});
+    if (!keys.length) return '';
+    var anyWikidata = keys.some(function (k) { return games[k] && games[k].source === 'wikidata'; });
+    if (anyWikidata) {
+      return '<p class="bgg-attrib"><a href="https://www.wikidata.org" target="_blank" ' +
+        'rel="noopener noreferrer">Game data from Wikidata (CC0)</a></p>';
+    }
+    return '<p class="bgg-attrib"><a href="https://boardgamegeek.com" target="_blank" ' +
+      'rel="noopener noreferrer">Powered by BGG</a></p>';
   }
 
   /* What this seller will take. Purely informational except for Trades, which

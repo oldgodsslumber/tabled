@@ -634,5 +634,91 @@ window.ProfileView = (function () {
     });
   }
 
-  return { render: render, settings: settings };
+  /* ---- Onboarding (first run) --------------------------------------------
+   * A deliberately small first-run screen: a name and a general area, nothing
+   * else. The area is required because a listing now inherits its location from
+   * the profile -- without one, the create form has nowhere to post. The router
+   * holds a new account here until this succeeds. Everything else (bio, photo,
+   * availability, promo) is discoverable later in Edit profile. */
+  function onboard(root) {
+    var me = Store.me();
+    if (!me) { root.innerHTML = U.empty('Sign in first', ''); return; }
+
+    root.innerHTML =
+      '<div class="form-page onboard">' +
+        '<h1>Welcome to Tabled</h1>' +
+        '<p class="fine">Two quick things and you\'re in. You can change either ' +
+          'later in your profile.</p>' +
+
+        '<label class="field">' +
+          '<span>Display name</span>' +
+          '<input id="ob-name" type="text" maxlength="60" value="' + U.attr(me.displayName || '') + '">' +
+          '<span class="fine">This and your photo are the only things other people see. ' +
+            'Your email address is never shown.</span>' +
+        '</label>' +
+
+        '<label class="field">' +
+          '<span>Your general area</span>' +
+          '<input id="ob-area" type="text" maxlength="80" placeholder="North Jacksonville" ' +
+            'value="' + U.attr(me.generalArea || '') + '">' +
+          '<span class="fine">Every listing you post shows this text and searches by ' +
+            'distance from it. It\'s turned into a deliberately fuzzed map point — your real ' +
+            'address is never stored or shown. Keep it broad: a neighborhood, not a street. ' +
+            'Tabled serves ' + U.esc(CFG.GEO.label) + ' only right now.</span>' +
+        '</label>' +
+
+        '<div class="form-actions">' +
+          '<button class="btn" id="ob-go">Start browsing</button>' +
+        '</div>' +
+      '</div>';
+
+    U.$('#ob-go', root).addEventListener('click', function () {
+      var btn = this;
+      var name = U.$('#ob-name').value.trim();
+      var area = U.$('#ob-area').value.trim();
+      if (!name) { U.toast('Pick a display name', 'warn'); return; }
+      if (!area) { U.toast('Your general area is required', 'warn'); U.$('#ob-area').focus(); return; }
+
+      btn.disabled = true;
+      btn.textContent = 'Setting up…';
+
+      /* Only an out-of-region area is fatal (Tabled is US-only, and the area is
+       * the one required field). Any OTHER geocoding failure -- including the
+       * key simply not being configured yet -- must NOT block onboarding, or a
+       * new account can't get in at all. In that case the area text saves
+       * without a map point and distance search stays off until it resolves,
+       * exactly as the Edit-profile flow already behaves. */
+      var patch = { displayName: name, generalArea: area };
+      Store.geocodeArea(area).then(function (res) {
+        if (res && typeof res.lat === 'number') {
+          patch.geoPoint = { lat: res.lat, lng: res.lng };
+          patch.geohash = res.geohash || Geo.encode(res.lat, res.lng, 9);
+          patch.countryCode = res.countryCode || null;
+          patch.state = res.state || null;
+        }
+      }).catch(function (err) {
+        if (isOutOfRegion(err)) throw err;
+        console.warn('[tabled] onboarding geocode unavailable', err);
+        U.toast('Saved — distance search will switch on once mapping is set up', 'warn');
+      }).then(function () {
+        return Store.saveProfile(patch);
+      }).then(function () {
+        U.toast('You\'re all set');
+        App.go('feed', {});
+      }).catch(function (err) {
+        if (isOutOfRegion(err)) {
+          U.toast(err.message, 'warn');
+          var input = U.$('#ob-area');
+          if (input) { input.focus(); input.select(); }
+        } else {
+          console.error('[tabled] onboarding save failed', err);
+          U.toast('Could not save that — try again', 'bad');
+        }
+        btn.disabled = false;
+        btn.textContent = 'Start browsing';
+      });
+    });
+  }
+
+  return { render: render, settings: settings, onboard: onboard };
 })();

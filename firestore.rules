@@ -246,10 +246,19 @@ service cloud.firestore {
 
     match /games/{bggId} {
       // Read by everyone -- categories and mechanics drive the feed filters.
-      // Written only by getGameDetails, so nobody can poison the cache with a
-      // fake suggestedPrice and manufacture a permanent Good Deal ranking.
+      //
+      // BGG games are written only by getGameDetails (admin SDK), so the cache
+      // can't be poisoned with a fake suggestedPrice to manufacture a permanent
+      // Good Deal ranking. The Wikidata data source is client-side and has no
+      // such function, so a signed-in client may cache a Wikidata-sourced game
+      // -- but ONLY one carrying no suggestedPrice, which is exactly the shape
+      // Wikidata produces (it has no marketplace pricing). That single
+      // condition preserves the no-fake-price invariant: a client still cannot
+      // write any game that could affect the Good Deal sort.
       allow read: if true;
-      allow write: if false;
+      allow write: if signedIn()
+        && request.resource.data.source == 'wikidata'
+        && request.resource.data.get('suggestedPrice', null) == null;
     }
 
     // ---- reports ----

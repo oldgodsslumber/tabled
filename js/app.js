@@ -33,6 +33,9 @@ window.App = (function () {
     profile:  { render: function (root, p) { ProfileView.render(root, p); } },
     me:       { render: function (root, p) { ProfileView.render(root, {}); }, nav: 'me', auth: true },
     settings: { render: function (root, p) { ProfileView.settings(root); }, auth: true },
+    /* First-run profile setup. Not in the nav; the router forces a new account
+     * here until it has set a general area (see route_render). */
+    onboard:  { render: function (root, p) { ProfileView.onboard(root); }, auth: true },
     /* Not in the nav — reachable from settings, and only rendered when the
      * role claim is present. That is presentation; the rules and the callable
      * are what actually gate it. */
@@ -104,6 +107,20 @@ window.App = (function () {
 
   function route_render() {
     var p = parseHash();
+
+    /* Require a general area once. A new account inherits nothing to locate its
+     * listings, so it's held on the onboarding screen until it sets one; after
+     * that needsOnboarding() is false and this never fires again. */
+    if (currentUser && p.route !== 'onboard' && Store.needsOnboarding()) {
+      location.hash = '#/onboard';
+      return;
+    }
+    /* And the reverse: don't strand a finished account on the setup screen. */
+    if (currentUser && p.route === 'onboard' && !Store.needsOnboarding()) {
+      location.hash = '#/feed';
+      return;
+    }
+
     var def = ROUTES[p.route];
 
     /* Firestore listeners are not DOM listeners — swapping out #view drops the
@@ -122,6 +139,10 @@ window.App = (function () {
     }
 
     setNav(def.nav);
+    /* Onboarding is a gate, not a destination — hide the nav so there's nothing
+     * to tap away to. (The router would bounce them back anyway.) */
+    var navBar = U.$('#nav');
+    if (navBar) navBar.hidden = (p.route === 'onboard');
     root.scrollTop = 0;
     window.scrollTo(0, 0);
     def.render(root, p);

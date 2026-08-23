@@ -46,7 +46,7 @@ window.CreateView = (function () {
         geohash: me.geohash || null,
         eventId: null, eventName: null, eventStartDate: null, eventEndDate: null,
         acceptedPayment: { cash: true, paypal: false, venmo: false, trades: false },
-        entries: [blankEntry()]
+        entries: []
       };
       draw(root);
       return;
@@ -89,13 +89,6 @@ window.CreateView = (function () {
       '<div class="form-page">' +
         '<h1>' + (editingId ? 'Edit listing' : 'New listing') + '</h1>' +
 
-        '<label class="field">' +
-          '<span>Listing title <em>optional</em></span>' +
-          '<input id="f-title" type="text" maxlength="80" placeholder="Game night clearout" ' +
-            'value="' + U.attr(draft.title) + '">' +
-          '<span class="fine">Only useful when you\'re bundling several games. One game? Leave it blank.</span>' +
-        '</label>' +
-
         '<section class="block">' +
           '<h2>Games in this listing</h2>' +
           '<div id="entries"></div>' +
@@ -104,7 +97,7 @@ window.CreateView = (function () {
               ? '<label class="field">' +
                   '<span>Add a game</span>' +
                   '<input id="bgg-q" type="search" autocomplete="off" ' +
-                    'placeholder="Search BoardGameGeek — start typing a title">' +
+                    'placeholder="Search for a board game — start typing a title">' +
                 '</label>' +
                 '<div id="bgg-results" class="bgg-results" hidden></div>' +
                 '<button class="btn ghost small" id="add-manual">Add a game manually instead</button>' +
@@ -142,15 +135,10 @@ window.CreateView = (function () {
 
         '<section class="block">' +
           '<h2>Where</h2>' +
-          '<label class="field">' +
-            '<span>General area</span>' +
-            '<input id="f-area" type="text" maxlength="80" placeholder="North Jacksonville" ' +
-              'value="' + U.attr(draft.locationLabel) + '">' +
-            '<span class="fine">This text is all anyone sees. It\'s turned into a deliberately ' +
-              'fuzzed map point for distance search — your real address is never stored or shown. ' +
-              'Tabled is US-only right now.</span>' +
-          '</label>' +
-          '<p class="fine" id="geo-status">' + geoStatus() + '</p>' +
+          '<p class="fine">Posts in <strong>' + U.esc(Store.me().generalArea || 'your area') +
+            '</strong> — pulled from your profile, so you never retype it. Everyone sees that ' +
+            'text; the map point behind it is deliberately fuzzed. ' +
+            '<a href="#/settings">Change your area</a>.</p>' +
         '</section>' +
 
         '<div class="form-actions">' +
@@ -175,12 +163,6 @@ window.CreateView = (function () {
     return total;
   }
 
-  function geoStatus() {
-    if (!draft.locationLabel) return 'No area set — this listing won\'t appear in distance searches.';
-    if (!draft.geoPoint) return 'Area not yet mapped — it will be looked up when you save.';
-    return 'Mapped for distance search.';
-  }
-
   function drawEntries() {
     var host = U.$('#entries');
     if (!host) return;
@@ -194,6 +176,12 @@ window.CreateView = (function () {
    * files and ask that one be used, sized so the text stays legible. Drop the
    * asset in and swap the span for an <img>. */
   function bggAttribution() {
+    if (BGG.usingWikidata()) {
+      return '<p class="bgg-attrib">' +
+        '<a href="https://www.wikidata.org" target="_blank" rel="noopener noreferrer">' +
+          'Game data from Wikidata (CC0)' +
+        '</a></p>';
+    }
     return '<p class="bgg-attrib">' +
       '<a href="https://boardgamegeek.com" target="_blank" rel="noopener noreferrer">' +
         'Powered by BGG' +
@@ -269,7 +257,7 @@ window.CreateView = (function () {
     var entry = draft.entries[entryIndex];
     var m = U.modal('Add to this lot',
       (BGG.available()
-        ? '<label class="field"><span>Search BoardGameGeek</span>' +
+        ? '<label class="field"><span>Search for a game</span>' +
             '<input id="lot-q" type="search" autocomplete="off" ' +
               'placeholder="Start typing an expansion name"></label>' +
           '<div id="lot-results" class="bgg-results" hidden></div>' +
@@ -592,20 +580,6 @@ window.CreateView = (function () {
   }
 
   function wire(root) {
-    U.$('#f-title', root).addEventListener('input', function () { draft.title = this.value; });
-
-    var area = U.$('#f-area', root);
-    area.addEventListener('input', function () {
-      /* Editing the label invalidates the mapped point — resolving happens on
-       * save, once, rather than firing a geocoding call per keystroke. */
-      if (this.value !== draft.locationLabel) {
-        draft.locationLabel = this.value;
-        draft.geoPoint = null;
-        draft.geohash = null;
-        U.$('#geo-status').textContent = geoStatus();
-      }
-    });
-
     U.on(root, '[data-ful]', function (e, t) {
       if (t.disabled) return;
       var k = t.dataset.ful;
@@ -700,7 +674,6 @@ window.CreateView = (function () {
 
     U.on(host, '[data-remove]', function (e, t) {
       draft.entries.splice(Number(t.dataset.remove), 1);
-      if (!draft.entries.length) draft.entries.push(blankEntry());
       drawEntries();
     });
 
@@ -825,8 +798,8 @@ window.CreateView = (function () {
     if (!draft.fulfillment.pickup && !draft.fulfillment.inPersonAtEvent) {
       return 'Pick at least one way buyers can get it.';
     }
-    if (draft.fulfillment.pickup && !draft.locationLabel.trim()) {
-      return 'Local pickup needs a general area.';
+    if (draft.fulfillment.pickup && !(Store.me().generalArea || '').trim()) {
+      return 'Set your general area in your profile before posting a pickup listing.';
     }
     if (draft.fulfillment.inPersonAtEvent && !draft.eventId) {
       return 'Pick an event, or create one, for in-person selling.';
@@ -877,52 +850,30 @@ window.CreateView = (function () {
         App.go('listing', { id: id });
       })
       .catch(function (err) {
-        if (isOutOfRegion(err)) {
-          U.toast(err.message, 'warn');
-          var area = U.$('#f-area');
-          if (area) { area.focus(); area.select(); }
-        } else {
-          console.error('[tabled] save failed', err);
-          U.toast('Could not save that listing', 'bad');
-        }
+        console.error('[tabled] save failed', err);
+        U.toast('Could not save that listing', 'bad');
         busy = false;
         btn.disabled = false;
         btn.textContent = editingId ? 'Save changes' : 'Post listing';
       });
   }
 
-  /* Geocode only when the label changed and has no point yet.
-   *
-   * Two failure modes, treated very differently:
-   *
-   *   Out-of-region  FATAL. Tabled is US-only, and a listing whose location
-   *                  isn't in the US must not post at all. Rethrown.
-   *   Anything else  Non-fatal — a flaky geocoding API shouldn't stop someone
-   *                  publishing. The listing posts without distance search.
-   *
-   * Distinguishing these matters: swallowing the first would let a non-US
-   * listing through the exact gate that exists to stop it. */
+  /* Location comes from the seller's profile, never this form. The profile area
+   * was geocoded and fuzzed once, when they set it, so every one of a seller's
+   * listings shares that single point. That's deliberate: re-geocoding each
+   * listing would jitter it independently, and averaging a seller's listings
+   * could then recover their true location. Onboarding guarantees a new account
+   * has set an area before it can ever reach this form, and the area was
+   * already validated US-only at that point, so there's no geocoding — and no
+   * out-of-region case — here. */
   function resolveLocation() {
-    if (!draft.locationLabel.trim() || draft.geoPoint) return Promise.resolve();
-    return Store.geocodeArea(draft.locationLabel.trim()).then(function (res) {
-      if (res && typeof res.lat === 'number') {
-        draft.geoPoint = { lat: res.lat, lng: res.lng };
-        draft.geohash = res.geohash || Geo.encode(res.lat, res.lng, 9);
-        draft.countryCode = res.countryCode || null;
-        draft.state = res.state || null;
-      }
-    }).catch(function (err) {
-      if (isOutOfRegion(err)) throw err;
-      console.warn('[tabled] geocode failed', err);
-      U.toast('Could not map that area — the listing will post without distance search', 'warn');
-    });
-  }
-
-  /* The callable rejects with code 'functions/out-of-range' and a message that
-   * already reads correctly to a user, so it's surfaced verbatim rather than
-   * replaced with our own wording. */
-  function isOutOfRegion(err) {
-    return !!err && /out-of-range/.test(err.code || '');
+    var me = Store.me();
+    draft.locationLabel = me.generalArea || '';
+    draft.geoPoint = me.geoPoint || null;
+    draft.geohash = me.geohash || null;
+    draft.countryCode = me.countryCode || null;
+    draft.state = me.state || null;
+    return Promise.resolve();
   }
 
   return { render: render };

@@ -16,6 +16,17 @@
 window.BGG = (function () {
 
   var call = null;                      /* set by firebase-config.js */
+
+  /* Proof-of-concept data source switch. `?source=wikidata` (or CFG.GAME_SOURCE)
+   * routes every game lookup through the fully-open Wikidata module instead of
+   * the BGG proxy — no token, no approval, and it works client-side, so the
+   * whole flow runs from the demo link with nothing deployed. When BGG's own
+   * approval lands, drop the flag and this module goes back to the BGG proxy
+   * unchanged. */
+  function usingWikidata() {
+    if (/[?&]source=wikidata/.test(location.search)) return true;
+    return (typeof CFG !== 'undefined' && CFG.GAME_SOURCE === 'wikidata');
+  }
   var detailCache = Object.create(null);
   var searchCache = Object.create(null);
 
@@ -73,7 +84,7 @@ window.BGG = (function () {
    * reachable. Demo mode has no callable but does have the offline catalog
    * below, so search still works there; only a latched unusable state (no
    * approved token, or a revoked one) takes the search box away. */
-  function available() { return !unusable; }
+  function available() { return usingWikidata() ? true : !unusable; }
   function reason() { return unusableReason; }
 
   /* Candidate matches for the create-listing autocomplete. Results are cached
@@ -81,6 +92,7 @@ window.BGG = (function () {
    * re-asking BGG for a query we already answered is exactly what gets an app
    * rate-limited. */
   function search(q) {
+    if (usingWikidata()) return Wikidata.search(q);
     var key = String(q || '').trim().toLowerCase();
     if (key.length < 2) return Promise.resolve([]);
     if (searchCache[key]) return Promise.resolve(searchCache[key]);
@@ -121,6 +133,7 @@ window.BGG = (function () {
    * effect, which is what makes categories and mechanics available to the feed
    * filters without any further BGG traffic. */
   function details(bggId) {
+    if (usingWikidata()) return Wikidata.details(bggId);
     var id = String(bggId);
     if (detailCache[id]) return Promise.resolve(detailCache[id]);
 
@@ -166,6 +179,7 @@ window.BGG = (function () {
   return {
     attach: attach,
     available: available,
+    usingWikidata: usingWikidata,
     reason: reason,
     markUnusable: markUnusable,
     search: search,
