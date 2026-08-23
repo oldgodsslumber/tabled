@@ -383,7 +383,7 @@ window.Feed = (function () {
         '<h4>Category</h4>' +
         '<select data-f="category">' +
           '<option value="">Any category</option>' +
-          CFG.BGG_CATEGORIES.map(function (c) {
+          CFG.CATEGORIES.map(function (c) {
             return '<option value="' + U.attr(c) + '"' + (p.category === c ? ' selected' : '') + '>' +
               U.esc(c) + '</option>';
           }).join('') +

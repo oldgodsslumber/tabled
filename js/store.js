@@ -85,15 +85,16 @@ window.Store = (function () {
       var name = e.name || (g && g.name) || 'Untitled game';
       names.push(name);
       if (e.bggId) bggIds.push(String(e.bggId));
-      if (g) {
-        cats = cats.concat(g.categories || []);
-        mechs = mechs.concat(g.mechanics || []);
-      } else {
-        /* Hand-entered: the seller picked these themselves. Without this a
-         * manual listing is invisible to every category filter, which quietly
-         * makes the no-BGG path a second-class one. */
-        cats = cats.concat(e.categories || []);
-      }
+      /* Prefer the entry's own categories -- the seller seeds them from the
+       * game data and can then fix or add to them, so their edits must win.
+       * Fall back to the raw game categories only when the entry has none yet
+       * (e.g. saved before details finished loading). Normalized either way so
+       * every stored category is a real taxonomy value that a filter matches. */
+      var entryCats = (e.categories && e.categories.length)
+        ? e.categories
+        : (g ? (g.categories || []) : []);
+      cats = cats.concat(CFG.normalizeCategories(entryCats));
+      if (g) mechs = mechs.concat(g.mechanics || []);
       if (e.condition) conds.push(e.condition);
       tags = tags.concat(e.tags || []);
 

@@ -188,17 +188,18 @@ window.CreateView = (function () {
       '</a></p>';
   }
 
-  /* Categories for a hand-entered game. BGG normally supplies these, and
-   * without them a listing never matches a category filter — so when BGG is
-   * out of the picture the seller gets to pick them. */
-  function manualCategoryHtml(e, i) {
-    if (e.bggId) return '';
+  /* Categories for ANY game in the listing -- searched or hand-entered. A
+   * searched game is pre-seeded from its own data (Wikidata's genres, folded
+   * onto our taxonomy), and the seller can fix or add to them here; that's the
+   * cure for "the categories are all wrong". Without categories a listing never
+   * matches a category filter, so this is worth surfacing on every entry. */
+  function categoryHtml(e, i) {
     var chosen = e.categories || [];
     return '<div class="field">' +
       '<span>Categories <em>optional</em></span>' +
       '<select class="e-cat-add">' +
         '<option value="">Add a category…</option>' +
-        CFG.BGG_CATEGORIES.filter(function (c) { return chosen.indexOf(c) === -1; })
+        CFG.CATEGORIES.filter(function (c) { return chosen.indexOf(c) === -1; })
           .map(function (c) {
             return '<option value="' + U.attr(c) + '">' + U.esc(c) + '</option>';
           }).join('') +
@@ -350,7 +351,7 @@ window.CreateView = (function () {
               '<div class="fine">BGG #' + U.esc(e.bggId) + '</div>'
             : '<input class="e-name" type="text" maxlength="120" placeholder="Game title" ' +
               'value="' + U.attr(e.name) + '">' +
-              '<div class="fine">Entered manually — no categories, so it won\'t match category filters.</div>') +
+              '<div class="fine">Entered manually.</div>') +
         '</div>' +
         (draft.entries.length > 1
           ? '<button class="icon-btn danger" data-remove="' + i + '" aria-label="Remove this game">&times;</button>'
@@ -386,7 +387,7 @@ window.CreateView = (function () {
 
       lotHtml(e, i) +
 
-      manualCategoryHtml(e, i) +
+      categoryHtml(e, i) +
 
       '<div class="field">' +
         '<span>Tags</span>' +
@@ -420,7 +421,7 @@ window.CreateView = (function () {
               '<span>+</span></label>'
             : '') +
         '</div>' +
-        '<span class="fine">Photos of the actual copy sell it. Box art comes from BGG automatically.</span>' +
+        '<span class="fine">Photos of the actual copy sell it. Box art is filled in automatically.</span>' +
       '</div>' +
     '</div>';
   }
@@ -701,7 +702,7 @@ window.CreateView = (function () {
       var text = q.value.trim();
       if (text.length < 2) { results.hidden = true; results.innerHTML = ''; return; }
       results.hidden = false;
-      results.innerHTML = U.spinner('Searching BoardGameGeek');
+      results.innerHTML = U.spinner('Searching games');
       BGG.search(text).then(function (rows) {
         if (q.value.trim() !== text) return;   /* a newer query already won */
         if (!rows.length) {
@@ -756,7 +757,15 @@ window.CreateView = (function () {
       if (!game) return;
       gamesById[String(bggId)] = game;
       draft.entries.forEach(function (e) {
-        if (String(e.bggId) === String(bggId) && !e.name) e.name = game.name;
+        if (String(e.bggId) !== String(bggId)) return;
+        if (!e.name) e.name = game.name;
+        /* Seed the category chips from the game's data (already normalized to
+         * our taxonomy) so the seller starts from something real and edits from
+         * there. Only seed an empty set -- never clobber a seller's own edits
+         * on a later redraw. */
+        if (!(e.categories && e.categories.length) && game.categories && game.categories.length) {
+          e.categories = CFG.normalizeCategories(game.categories);
+        }
       });
       drawEntries();
     });

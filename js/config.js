@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260823c';
+  var BUILD = '20260823d';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -86,21 +86,126 @@ window.CFG = (function () {
    *
    * Cached `games` docs store BGG's exact strings; these must match them
    * verbatim or the array-contains filter silently matches nothing. */
-  var BGG_CATEGORIES = [
-    'Abstract Strategy', 'Adventure', 'Age of Reason', 'American West', 'Ancient',
-    'Animals', 'Bluffing', 'Card Game', 'Children\'s Game', 'City Building',
-    'Civilization', 'Collectible Components', 'Deduction', 'Dice', 'Economic',
-    'Educational', 'Environmental', 'Exploration', 'Fantasy', 'Farming',
-    'Fighting', 'Horror', 'Humor', 'Industry / Manufacturing', 'Mafia',
-    'Math', 'Maze', 'Medical', 'Medieval', 'Miniatures', 'Modern Warfare',
-    'Movies / TV / Radio', 'Murder / Mystery', 'Mythology', 'Napoleonic',
-    'Nautical', 'Negotiation', 'Novel-based', 'Party Game', 'Pirates',
-    'Political', 'Prehistoric', 'Print & Play', 'Puzzle', 'Racing',
-    'Real-time', 'Religious', 'Renaissance', 'Science Fiction', 'Space Exploration',
-    'Spies / Secret Agents', 'Sports', 'Territory Building', 'Trains',
-    'Transportation', 'Travel', 'Trivia', 'Video Game Theme', 'Wargame',
-    'Word Game', 'World War I', 'World War II', 'Zombies'
+  /* How tabletop players actually describe games: the popular MECHANICS
+   * (Worker Placement, Tile Placement, Deck Building...) alongside the themes.
+   * BGG's own list is themes only, which is why a hand-entered game used to
+   * offer no "Worker Placement" or "Tile Placement" at all. This one list drives
+   * both the create-form picker and the feed's category filter, so the two can
+   * never drift. Kept alphabetical for a scannable dropdown. */
+  var CATEGORIES = [
+    'Abstract', 'Adventure', 'Ancient', 'Animals', 'Area Control',
+    'Auction / Bidding', 'Bluffing', 'Campaign / Legacy', 'Card Drafting',
+    'Card Game', 'Children\'s', 'City Building', 'Civilization', 'Cooperative',
+    'Deck Building', 'Deduction', 'Dexterity', 'Dice Rolling', 'Economic',
+    'Educational', 'Engine Building', 'Exploration', 'Family', 'Fantasy',
+    'Fighting', 'Hand Management', 'Historical', 'Horror', 'Humor', 'Medieval',
+    'Modular Board', 'Mystery', 'Mythology', 'Nautical', 'Negotiation', 'Party',
+    'Pattern Building', 'Pirates', 'Political', 'Push Your Luck', 'Puzzle',
+    'Racing', 'Roll & Write', 'Route Building', 'Science Fiction',
+    'Set Collection', 'Social Deduction', 'Solo', 'Space', 'Sports', 'Strategy',
+    'Tableau Building', 'Tile Placement', 'Trains', 'Trick-Taking', 'Two-Player',
+    'Variable Player Powers', 'Wargame', 'Word Game', 'Worker Placement', 'Zombies'
   ];
+
+  /* Maps the messy vocabularies of BGG and Wikidata onto CATEGORIES above.
+   * Ordered: the FIRST substring a raw label contains wins, so more-specific
+   * terms are listed before the general ones they contain -- 'abstract strategy'
+   * must resolve to Abstract before 'strategy' could claim it, and 'card
+   * drafting' to Card Drafting before plain 'card'. Anything that matches
+   * nothing is dropped rather than shown as a bogus category. */
+  var CATEGORY_SYNONYMS = [
+    ['worker placement', 'Worker Placement'],
+    ['abstract', 'Abstract'],
+    ['social deduction', 'Social Deduction'],
+    ['hidden role', 'Social Deduction'],
+    ['hidden traitor', 'Social Deduction'],
+    ['deck-build', 'Deck Building'], ['deck build', 'Deck Building'],
+    ['deckbuild', 'Deck Building'], ['deck construction', 'Deck Building'],
+    ['engine build', 'Engine Building'],
+    ['tableau', 'Tableau Building'],
+    ['card draft', 'Card Drafting'], ['drafting', 'Card Drafting'],
+    ['tile', 'Tile Placement'],
+    ['set collection', 'Set Collection'],
+    ['area control', 'Area Control'], ['area majority', 'Area Control'],
+    ['area influence', 'Area Control'], ['area enclosure', 'Area Control'],
+    ['hand management', 'Hand Management'],
+    ['push your luck', 'Push Your Luck'], ['push-your-luck', 'Push Your Luck'],
+    ['roll-and-write', 'Roll & Write'], ['roll and write', 'Roll & Write'],
+    ['roll & write', 'Roll & Write'], ['flip and write', 'Roll & Write'],
+    ['trick-taking', 'Trick-Taking'], ['trick taking', 'Trick-Taking'],
+    ['pattern building', 'Pattern Building'], ['pattern recognition', 'Pattern Building'],
+    ['variable player power', 'Variable Player Powers'],
+    ['modular board', 'Modular Board'],
+    ['auction', 'Auction / Bidding'], ['bidding', 'Auction / Bidding'],
+    ['dexterity', 'Dexterity'], ['flick', 'Dexterity'],
+    ['deduction', 'Deduction'],
+    ['negotiation', 'Negotiation'], ['trading', 'Economic'],
+    ['route', 'Route Building'], ['network build', 'Route Building'],
+    ['pick-up and deliver', 'Route Building'], ['pickup and deliver', 'Route Building'],
+    ['co-op', 'Cooperative'], ['cooperative', 'Cooperative'], ['co-operative', 'Cooperative'],
+    ['legacy', 'Campaign / Legacy'], ['campaign', 'Campaign / Legacy'],
+    ['dice', 'Dice Rolling'],
+    ['bluff', 'Bluffing'],
+    ['adventure', 'Adventure'],
+    ['ancient', 'Ancient'],
+    ['animal', 'Animals'], ['nature', 'Animals'], ['wildlife', 'Animals'],
+    ['children', "Children's"], ['kids', "Children's"], ['family', 'Family'],
+    ['city building', 'City Building'], ['city-building', 'City Building'],
+    ['civilization', 'Civilization'], ['civilisation', 'Civilization'],
+    ['economic', 'Economic'], ['economy', 'Economic'], ['industry', 'Economic'],
+    ['manufacturing', 'Economic'], ['farming', 'Economic'], ['financial', 'Economic'],
+    ['educational', 'Educational'],
+    ['exploration', 'Exploration'],
+    ['fantasy', 'Fantasy'],
+    ['fighting', 'Fighting'], ['combat', 'Fighting'], ['wrestling', 'Fighting'],
+    ['horror', 'Horror'],
+    ['humor', 'Humor'], ['humour', 'Humor'], ['comedy', 'Humor'],
+    ['medieval', 'Medieval'],
+    ['murder', 'Mystery'], ['mystery', 'Mystery'], ['detective', 'Mystery'],
+    ['mytholog', 'Mythology'],
+    ['nautical', 'Nautical'], ['naval', 'Nautical'], ['sailing', 'Nautical'],
+    ['pirate', 'Pirates'],
+    ['party', 'Party'],
+    ['political', 'Political'], ['politics', 'Political'],
+    ['puzzle', 'Puzzle'],
+    ['racing', 'Racing'], ['race', 'Racing'],
+    ['science fiction', 'Science Fiction'], ['sci-fi', 'Science Fiction'],
+    ['scifi', 'Science Fiction'], ['science-fiction', 'Science Fiction'],
+    ['space', 'Space'],
+    ['sport', 'Sports'],
+    ['train', 'Trains'], ['railway', 'Trains'], ['railroad', 'Trains'],
+    ['wargame', 'Wargame'], ['war game', 'Wargame'], ['miniatures wargame', 'Wargame'],
+    ['word', 'Word Game'],
+    ['zombie', 'Zombies'],
+    ['two-player', 'Two-Player'], ['2-player', 'Two-Player'], ['two player', 'Two-Player'],
+    ['solitaire', 'Solo'], ['solo', 'Solo'],
+    ['card game', 'Card Game'],
+    ['euro', 'Strategy'], ['strateg', 'Strategy']
+  ];
+
+  /* Fold a list of raw genre/category/mechanic labels (from BGG or Wikidata)
+   * down to the CATEGORIES vocabulary. Unknown labels are dropped, not kept:
+   * a bogus 'Tile-Based Video Game' category is worse than none, because it
+   * never matches a filter and just looks wrong. Order is preserved, dupes
+   * removed. A label already in the taxonomy passes straight through. */
+  var CATEGORY_SET = {};
+  CATEGORIES.forEach(function (c) { CATEGORY_SET[c.toLowerCase()] = c; });
+
+  function normalizeCategories(list) {
+    var out = [], seen = {};
+    (list || []).forEach(function (raw) {
+      var low = String(raw || '').toLowerCase().trim();
+      if (!low) return;
+      var hit = CATEGORY_SET[low] || null;
+      if (!hit) {
+        for (var i = 0; i < CATEGORY_SYNONYMS.length; i++) {
+          if (low.indexOf(CATEGORY_SYNONYMS[i][0]) !== -1) { hit = CATEGORY_SYNONYMS[i][1]; break; }
+        }
+      }
+      if (hit && !seen[hit]) { seen[hit] = 1; out.push(hit); }
+    });
+    return out;
+  }
 
   /* ---- Fulfillment -------------------------------------------------------- */
   /* Pickup-only. Tabled is local, in-person trading — there is no shipping
@@ -311,7 +416,8 @@ window.CFG = (function () {
     GAME_SOURCE: GAME_SOURCE,
     CONDITIONS: CONDITIONS,
     TAGS: TAGS,
-    BGG_CATEGORIES: BGG_CATEGORIES,
+    CATEGORIES: CATEGORIES,
+    normalizeCategories: normalizeCategories,
     FULFILLMENT: FULFILLMENT,
     GEO: GEO,
     inUsBox: inUsBox,
