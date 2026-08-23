@@ -19,6 +19,11 @@ window.ProfileView = (function () {
     return !!err && /out-of-range/.test(err.code || '');
   }
 
+  /* Location is a 5-digit US ZIP. It geocodes to a tight centroid (then fuzzed),
+   * which is far more precise for distance search than a free-text neighborhood
+   * that could map anywhere in a metro. ZIP+4 is trimmed to the 5-digit prefix. */
+  function isZip(z) { return /^\d{5}$/.test(String(z || '').trim()); }
+
   function render(root, params) {
     var uid = params.id || Store.uid();
     var mine = Store.isMe(uid);
@@ -308,13 +313,14 @@ window.ProfileView = (function () {
         '</label>' +
 
         '<label class="field">' +
-          '<span>General area</span>' +
-          '<input id="s-area" type="text" maxlength="80" placeholder="North Jacksonville" ' +
+          '<span>ZIP code</span>' +
+          '<input id="s-area" type="text" inputmode="numeric" maxlength="5" ' +
+            'autocomplete="postal-code" pattern="[0-9]{5}" placeholder="02139" ' +
             'value="' + U.attr(me.generalArea || '') + '">' +
-          '<span class="fine">Used for distance search, and shown as this exact text. ' +
-            'It\'s converted to a map point that is deliberately jittered by up to a mile or two, ' +
-            'so browsing never reveals where anyone actually lives. Keep it broad — a neighborhood, ' +
-            'not a street. Tabled serves ' + U.esc(CFG.GEO.label) + ' only right now.</span>' +
+          '<span class="fine">Used for distance search, and shown to others as the ZIP. ' +
+            'It\'s converted to a map point jittered by up to a mile or two, so browsing never ' +
+            'reveals where anyone actually lives. Tabled serves ' + U.esc(CFG.GEO.label) +
+            ' only right now.</span>' +
         '</label>' +
 
         '<div class="form-actions">' +
@@ -362,6 +368,7 @@ window.ProfileView = (function () {
       var name = U.$('#s-name').value.trim();
       if (!name) { U.toast('A display name is required', 'warn'); return; }
       var area = U.$('#s-area').value.trim();
+      if (area && !isZip(area)) { U.toast('Enter a 5-digit ZIP code', 'warn'); U.$('#s-area').focus(); return; }
       var patch = { displayName: name, bio: U.$('#s-bio').value.trim(), generalArea: area };
 
       btn.disabled = true;
@@ -658,13 +665,14 @@ window.ProfileView = (function () {
         '</label>' +
 
         '<label class="field">' +
-          '<span>Your general area</span>' +
-          '<input id="ob-area" type="text" maxlength="80" placeholder="North Jacksonville" ' +
+          '<span>Your ZIP code</span>' +
+          '<input id="ob-area" type="text" inputmode="numeric" maxlength="5" ' +
+            'autocomplete="postal-code" pattern="[0-9]{5}" placeholder="02139" ' +
             'value="' + U.attr(me.generalArea || '') + '">' +
-          '<span class="fine">Every listing you post shows this text and searches by ' +
-            'distance from it. It\'s turned into a deliberately fuzzed map point — your real ' +
-            'address is never stored or shown. Keep it broad: a neighborhood, not a street. ' +
-            'Tabled serves ' + U.esc(CFG.GEO.label) + ' only right now.</span>' +
+          '<span class="fine">Listings search by distance from your ZIP. It becomes a ' +
+            'deliberately fuzzed map point — your exact address is never stored or shown, ' +
+            'and other people see only the ZIP. Tabled serves ' + U.esc(CFG.GEO.label) +
+            ' only right now.</span>' +
         '</label>' +
 
         '<div class="form-actions">' +
@@ -677,7 +685,7 @@ window.ProfileView = (function () {
       var name = U.$('#ob-name').value.trim();
       var area = U.$('#ob-area').value.trim();
       if (!name) { U.toast('Pick a display name', 'warn'); return; }
-      if (!area) { U.toast('Your general area is required', 'warn'); U.$('#ob-area').focus(); return; }
+      if (!isZip(area)) { U.toast('Enter a 5-digit ZIP code', 'warn'); U.$('#ob-area').focus(); return; }
 
       btn.disabled = true;
       btn.textContent = 'Setting up…';

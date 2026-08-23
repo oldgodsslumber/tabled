@@ -300,11 +300,15 @@ window.Store = (function () {
        * reject them even from the profile's own owner, so sending them would
        * fail the whole write. */
       saveProfile: function (uid, patch) {
-        var writable = {
-          displayName: patch.displayName,
-          bio: patch.bio,
-          photoURL: patch.photoURL || null
-        };
+        /* Only fields the caller actually supplied. Firestore's updateDoc THROWS
+         * on an undefined value (ignoreUndefinedProperties is off), so writing
+         * `bio: patch.bio` when the caller sent no bio -- as onboarding and the
+         * availability save both do -- rejects the whole write and surfaces as
+         * "could not save". Every field here is now conditional. */
+        var writable = {};
+        if (patch.displayName !== undefined) writable.displayName = patch.displayName;
+        if (patch.bio !== undefined) writable.bio = patch.bio;
+        if (patch.photoURL !== undefined) writable.photoURL = patch.photoURL || null;
         if (patch.generalArea !== undefined) writable.generalArea = patch.generalArea;
         if (patch.geoPoint !== undefined) writable.geoPoint = toGeoPoint(patch.geoPoint);
         if (patch.geohash !== undefined) writable.geohash = patch.geohash;
@@ -1098,7 +1102,7 @@ window.Store = (function () {
             displayName: authUser.displayName || 'You (demo)',
             photoURL: authUser.photoURL || null,
             bio: '',
-            generalArea: 'Riverside, Jacksonville',
+            generalArea: '32204',
             geoPoint: { lat: 30.3125, lng: -81.6795 },
             geohash: Geo.encode(30.3125, -81.6795, 9),
             countryCode: 'US', state: 'FL',

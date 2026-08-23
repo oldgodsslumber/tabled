@@ -135,10 +135,10 @@ window.CreateView = (function () {
 
         '<section class="block">' +
           '<h2>Where</h2>' +
-          '<p class="fine">Posts in <strong>' + U.esc(Store.me().generalArea || 'your area') +
-            '</strong> — pulled from your profile, so you never retype it. Everyone sees that ' +
-            'text; the map point behind it is deliberately fuzzed. ' +
-            '<a href="#/settings">Change your area</a>.</p>' +
+          '<p class="fine">Posts from ZIP <strong>' + U.esc(Store.me().generalArea || 'your ZIP') +
+            '</strong> — pulled from your profile, so you never retype it. Others see the ZIP; ' +
+            'the map point behind it is deliberately fuzzed. ' +
+            '<a href="#/settings">Change your ZIP</a>.</p>' +
         '</section>' +
 
         '<div class="form-actions">' +
