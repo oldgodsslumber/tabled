@@ -239,6 +239,7 @@ exports.getGameDetails = onCall({ secrets: [BGG_TOKEN], maxInstances: 1 }, async
     categories: linksOfType(item, 'boardgamecategory'),
     mechanics: linksOfType(item, 'boardgamemechanic'),
     suggestedPrice: medianUsdPrice(item),
+    source: 'bgg-api',
     lastSyncedAt: admin.firestore.FieldValue.serverTimestamp()
   };
 

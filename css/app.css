@@ -1085,6 +1085,32 @@ select {
 }
 .bgg-attrib a:hover { color: var(--navy); border-color: var(--navy); }
 
+/* "Powered by BGG" logo badge (BGG XML API terms require their mark, linked and
+   legible, on public-facing use of their data). */
+.bgg-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .2rem .5rem .2rem .45rem;
+  border-radius: 5px;
+  background: #182F44;              /* BGG's dark navy */
+  text-decoration: none;
+  line-height: 1;
+  vertical-align: middle;
+}
+.bgg-badge-pre {
+  color: #cfd8e2;
+  font-size: .72rem;
+  letter-spacing: .01em;
+}
+.bgg-badge-mark {
+  color: #ff5100;                  /* BGG orange */
+  font-weight: 800;
+  font-size: .92rem;
+  letter-spacing: .02em;
+}
+.bgg-badge:hover { filter: brightness(1.12); }
+
 /* ---- Lots (Phase 3) ------------------------------------------------------ */
 
 .lot-field { border-top: 1px dashed var(--line); padding-top: .7rem; }

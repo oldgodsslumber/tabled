@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260823f';
+  var BUILD = '20260824a';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -225,12 +225,12 @@ window.CFG = (function () {
   var PROMO = { minQty: 2, maxQty: 20, maxDollarsOff: 500 };
 
   /* ---- Game data source --------------------------------------------------
-   * Which catalogue the create form searches. 'wikidata' is the default while
-   * BoardGameGeek's API stays behind an approval wall we may never clear -- it
-   * works client-side with no token. The `?source=` URL param still overrides
-   * this per-visit (see js/bgg.js), so flipping back to BGG later is one edit
-   * here. */
-  var GAME_SOURCE = 'bgg';
+   * 'bggapi' = the live BoardGameGeek XML API (approved token, via the
+   * searchGames/getGameDetails functions) -- the definitive source, with box
+   * art and marketplace pricing. `?source=bgg` falls back to the bundled static
+   * catalogue and `?source=wikidata` to Wikidata; both are handy in demo mode,
+   * which has no Cloud Functions to reach the live API. */
+  var GAME_SOURCE = 'bggapi';
 
   /* ---- Geo-lock ----------------------------------------------------------
    * Tabled is US-only. The enforcement that matters is server-side, in

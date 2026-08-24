@@ -178,8 +178,7 @@ window.ListingView = (function () {
       return '<p class="bgg-attrib"><a href="https://www.wikidata.org" target="_blank" ' +
         'rel="noopener noreferrer">Game data from Wikidata (CC0)</a></p>';
     }
-    return '<p class="bgg-attrib"><a href="https://boardgamegeek.com" target="_blank" ' +
-      'rel="noopener noreferrer">Powered by BGG</a></p>';
+    return '<p class="bgg-attrib">' + U.bggBadge() + '</p>';
   }
 
   /* What this seller will take. Purely informational except for Trades, which
@@ -298,6 +297,24 @@ window.ListingView = (function () {
           (deal ? '<div class="entry-deal">' + deal + '</div>' : '') +
         '</div>' +
       '</div>' +
+
+      /* BGG's categories and mechanics shown VERBATIM, exactly as the API
+       * returns them. BGG's terms forbid modifying their data, so this displays
+       * their vocabulary unchanged and credited (the "Powered by BGG" badge sits
+       * below); our own taxonomy is used only to power the feed's filters, never
+       * presented here as BGG's classification. */
+      (game && ((game.categories && game.categories.length) || (game.mechanics && game.mechanics.length))
+        ? '<div class="bgg-info">' +
+            (game.categories && game.categories.length
+              ? '<p class="fine"><strong>Categories:</strong> ' +
+                game.categories.map(function (c) { return U.esc(c); }).join(', ') + '</p>'
+              : '') +
+            (game.mechanics && game.mechanics.length
+              ? '<p class="fine"><strong>Mechanics:</strong> ' +
+                game.mechanics.map(function (m) { return U.esc(m); }).join(', ') + '</p>'
+              : '') +
+          '</div>'
+        : '') +
 
       ((e.contents && e.contents.length)
         ? '<div class="lot-contents">' +

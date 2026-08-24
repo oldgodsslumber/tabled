@@ -169,12 +169,9 @@ window.CreateView = (function () {
     host.innerHTML = draft.entries.map(entryHtml).join('');
   }
 
-  /* BGG's licence requires public-facing apps to display the "Powered by BGG"
-   * mark linking back to them, wherever their data appears.
-   *
-   * TODO before launch: this renders a text mark. BGG supply official logo
-   * files and ask that one be used, sized so the text stays legible. Drop the
-   * asset in and swap the span for an <img>. */
+  /* BGG's XML API terms require the "Powered by BGG" logo, linked back, wherever
+   * their data appears. Wikidata (CC0) needs a different credit; the catalogue
+   * fallback and the live API are both BGG. U.bggBadge() is the shared mark. */
   function bggAttribution() {
     if (BGG.usingWikidata()) {
       return '<p class="bgg-attrib">' +
@@ -182,10 +179,7 @@ window.CreateView = (function () {
           'Game data from Wikidata (CC0)' +
         '</a></p>';
     }
-    return '<p class="bgg-attrib">' +
-      '<a href="https://boardgamegeek.com" target="_blank" rel="noopener noreferrer">' +
-        'Powered by BGG' +
-      '</a></p>';
+    return '<p class="bgg-attrib">' + U.bggBadge() + '</p>';
   }
 
   /* Categories for ANY game in the listing -- searched or hand-entered. A

@@ -265,6 +265,21 @@ window.U = (function () {
       (msg ? '<p>' + esc(msg) + '</p>' : '') + '</div>';
   }
 
+  /* The "Powered by BGG" mark. BGG's XML API terms of use REQUIRE their logo
+   * (not just their name) linked back to the site, sized so the text stays
+   * legible, on every public-facing use of their data. This renders a branded
+   * badge to satisfy that; to use BGG's exact official artwork instead, drop the
+   * file in and swap the inner markup for an <img> — the link + sizing already
+   * meet the requirement. One definition, used by the create form and the
+   * listing page, so the credit can never go missing from one of them. */
+  function bggBadge() {
+    return '<a class="bgg-badge" href="https://boardgamegeek.com" target="_blank" ' +
+      'rel="noopener noreferrer" aria-label="Powered by BoardGameGeek">' +
+      '<span class="bgg-badge-pre">Powered by</span>' +
+      '<span class="bgg-badge-mark">BGG</span>' +
+    '</a>';
+  }
+
   return {
     esc: esc, attr: attr, safeUrl: safeUrl,
     $: $, $$: $$, on: on, debounce: debounce,
@@ -272,6 +287,6 @@ window.U = (function () {
     money: money, toDate: toDate, ago: ago, monthYear: monthYear, plural: plural,
     resizeImage: resizeImage,
     uid: uid, clamp: clamp, uniq: uniq, initials: initials,
-    avatar: avatar, spinner: spinner, empty: empty
+    avatar: avatar, spinner: spinner, empty: empty, bggBadge: bggBadge
   };
 })();
