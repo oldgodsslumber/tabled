@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260823e';
+  var BUILD = '20260823f';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -168,19 +168,19 @@ window.CFG = (function () {
     ['party', 'Party'],
     ['political', 'Political'], ['politics', 'Political'],
     ['puzzle', 'Puzzle'],
-    ['racing', 'Racing'], ['race', 'Racing'],
+    ['racing', 'Racing'],
     ['science fiction', 'Science Fiction'], ['sci-fi', 'Science Fiction'],
     ['scifi', 'Science Fiction'], ['science-fiction', 'Science Fiction'],
     ['space', 'Space'],
-    ['sport', 'Sports'],
-    ['train', 'Trains'], ['railway', 'Trains'], ['railroad', 'Trains'],
+    ['sports', 'Sports'],
+    ['trains', 'Trains'], ['railway', 'Trains'], ['railroad', 'Trains'],
     ['wargame', 'Wargame'], ['war game', 'Wargame'], ['miniatures wargame', 'Wargame'],
     ['word', 'Word Game'],
     ['zombie', 'Zombies'],
     ['two-player', 'Two-Player'], ['2-player', 'Two-Player'], ['two player', 'Two-Player'],
     ['solitaire', 'Solo'], ['solo', 'Solo'],
     ['card game', 'Card Game'],
-    ['euro', 'Strategy'], ['strateg', 'Strategy']
+    ['eurogame', 'Strategy'], ['strateg', 'Strategy']
   ];
 
   /* Fold a list of raw genre/category/mechanic labels (from BGG or Wikidata)
@@ -230,7 +230,7 @@ window.CFG = (function () {
    * works client-side with no token. The `?source=` URL param still overrides
    * this per-visit (see js/bgg.js), so flipping back to BGG later is one edit
    * here. */
-  var GAME_SOURCE = 'wikidata';
+  var GAME_SOURCE = 'bgg';
 
   /* ---- Geo-lock ----------------------------------------------------------
    * Tabled is US-only. The enforcement that matters is server-side, in

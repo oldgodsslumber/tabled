@@ -27,6 +27,86 @@ window.BGG = (function () {
     if (/[?&]source=wikidata/.test(location.search)) return true;
     return (typeof CFG !== 'undefined' && CFG.GAME_SOURCE === 'wikidata');
   }
+
+  /* The default source: a bundled snapshot of BoardGameGeek's public dataset
+   * (~33k games with categories + mechanics, already folded onto our taxonomy).
+   * BGG's own API needs an approved token and its site blocks datacenter IPs, so
+   * a static catalogue is how real BGG data reaches the app without either. It
+   * loads lazily on first search and is a same-origin fetch, so it works in demo
+   * mode too. `?source=wikidata` still overrides for comparison. */
+  function usingCatalog() {
+    if (/[?&]source=(wikidata|bggapi)/.test(location.search)) return false;
+    return (typeof CFG !== 'undefined' && CFG.GAME_SOURCE === 'bgg');
+  }
+
+  var CATALOG_URL = 'bgg-catalog.json' +
+    (typeof CFG !== 'undefined' && CFG.BUILD ? '?v=' + CFG.BUILD : '');
+  var catalogPromise = null;   /* the fetch, once */
+  var catalogList = null;      /* [{ bggId, name, yearPublished, categories }] */
+  var catalogById = null;
+
+  function loadCatalog() {
+    if (catalogPromise) return catalogPromise;
+    catalogPromise = fetch(CATALOG_URL).then(function (r) {
+      if (!r.ok) throw new Error('catalog ' + r.status);
+      return r.json();
+    }).then(function (rows) {
+      catalogById = Object.create(null);
+      catalogList = rows.map(function (r) {
+        /* Compact row shape: [id, name, year, [categories]]. */
+        var g = { bggId: String(r[0]), name: r[1], yearPublished: r[2] || null, categories: r[3] || [] };
+        catalogById[g.bggId] = g;
+        return g;
+      });
+      return catalogList;
+    }).catch(function (err) {
+      console.warn('[tabled] BGG catalog load failed', err);
+      U.toast('Could not load the game catalogue — you can still enter games by hand', 'warn');
+      catalogPromise = null;   /* let a later keystroke retry */
+      return [];
+    });
+    return catalogPromise;
+  }
+
+  function catalogSearch(q) {
+    var needle = String(q || '').trim().toLowerCase();
+    if (needle.length < 2) return Promise.resolve([]);
+    return loadCatalog().then(function (list) {
+      var hits = [];
+      for (var i = 0; i < list.length && hits.length < 60; i++) {
+        if (list[i].name.toLowerCase().indexOf(needle) !== -1) hits.push(list[i]);
+      }
+      /* Exact, then prefix, then contains — and the list is already sorted by
+       * popularity, so ties resolve toward the games people actually mean. */
+      hits.sort(function (a, b) {
+        var an = a.name.toLowerCase(), bn = b.name.toLowerCase();
+        var ap = an === needle ? 0 : (an.indexOf(needle) === 0 ? 1 : 2);
+        var bp = bn === needle ? 0 : (bn.indexOf(needle) === 0 ? 1 : 2);
+        return ap - bp;
+      });
+      return hits.slice(0, 12).map(function (g) {
+        return { bggId: g.bggId, name: g.name, yearPublished: g.yearPublished };
+      });
+    });
+  }
+
+  function catalogDetails(id) {
+    var key = String(id);
+    return loadCatalog().then(function () {
+      var g = catalogById && catalogById[key];
+      if (!g) return null;
+      return {
+        id: g.bggId, name: g.name, yearPublished: g.yearPublished,
+        imageUrl: null,               /* the dataset carries no box art */
+        categories: g.categories || [],
+        mechanics: [],                /* folded into categories already */
+        suggestedPrice: null,         /* no marketplace pricing in the snapshot */
+        source: 'bgg',
+        lastSyncedAt: Date.now()
+      };
+    });
+  }
+
   var detailCache = Object.create(null);
   var searchCache = Object.create(null);
 
@@ -84,7 +164,7 @@ window.BGG = (function () {
    * reachable. Demo mode has no callable but does have the offline catalog
    * below, so search still works there; only a latched unusable state (no
    * approved token, or a revoked one) takes the search box away. */
-  function available() { return usingWikidata() ? true : !unusable; }
+  function available() { return (usingWikidata() || usingCatalog()) ? true : !unusable; }
   function reason() { return unusableReason; }
 
   /* Candidate matches for the create-listing autocomplete. Results are cached
@@ -93,6 +173,7 @@ window.BGG = (function () {
    * rate-limited. */
   function search(q) {
     if (usingWikidata()) return Wikidata.search(q);
+    if (usingCatalog()) return catalogSearch(q);
     var key = String(q || '').trim().toLowerCase();
     if (key.length < 2) return Promise.resolve([]);
     if (searchCache[key]) return Promise.resolve(searchCache[key]);
@@ -134,6 +215,7 @@ window.BGG = (function () {
    * filters without any further BGG traffic. */
   function details(bggId) {
     if (usingWikidata()) return Wikidata.details(bggId);
+    if (usingCatalog()) return catalogDetails(bggId);
     var id = String(bggId);
     if (detailCache[id]) return Promise.resolve(detailCache[id]);
 
@@ -180,6 +262,7 @@ window.BGG = (function () {
     attach: attach,
     available: available,
     usingWikidata: usingWikidata,
+    usingCatalog: usingCatalog,
     reason: reason,
     markUnusable: markUnusable,
     search: search,

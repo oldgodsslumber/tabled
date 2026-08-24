@@ -463,7 +463,7 @@ window.Store = (function () {
          * manufacturing a permanent Good Deal ranking. */
         Object.keys(gamesById || {}).forEach(function (gid) {
           var g = gamesById[gid];
-          if (g && g.source === 'wikidata') batch.set(docRef('games', gid), g);
+          if (g && (g.source === 'wikidata' || g.source === 'bgg')) batch.set(docRef('games', gid), g);
         });
 
         /* Harvest hand-entered games (no bggId -- not in BGG or Wikidata) into a

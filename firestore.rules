@@ -272,7 +272,7 @@ service cloud.firestore {
       // write any game that could affect the Good Deal sort.
       allow read: if true;
       allow write: if signedIn()
-        && request.resource.data.source == 'wikidata'
+        && request.resource.data.source in ['wikidata', 'bgg']
         && request.resource.data.get('suggestedPrice', null) == null;
     }
 
