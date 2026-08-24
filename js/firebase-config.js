@@ -7,7 +7,8 @@
  * These values are public by design. A web client cannot hide them, and Firebase
  * does not expect it to: security comes from firestore.rules, storage.rules and
  * Google Auth, never from keeping the API key secret. The keys that DO need
- * hiding (geocoding, Stripe) live in Cloud Functions and never appear here.
+ * hiding (the geocoding key, the BGG API token) live in Cloud Functions and
+ * never appear here.
  *
  * On the console's snippet: it shows `import ... from "firebase/app"`, which is
  * bare-module syntax that only resolves under a bundler. This app has no build
