@@ -54,6 +54,19 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 
+/* App shell: a full-height flex column so the sticky bottom nav is pushed to
+   the screen bottom even on short views (e.g. an empty Requests tab). Without
+   this, `position: sticky` only pins the nav once the page is tall enough to
+   scroll, so a short page left it floating partway up. */
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+/* The active view fills the space between the top bar and the nav. */
+#view { flex: 1 0 auto; }
+
 body.modal-open { overflow: hidden; }
 
 a { color: var(--navy-700); }
