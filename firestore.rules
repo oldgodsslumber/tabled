@@ -161,6 +161,13 @@ service cloud.firestore {
         allow read, write: if isUser(uid);
       }
 
+      // Your watchlist (saved listings) is private the same way: only you can
+      // read or change it, so a seller can never see WHO is watching -- only the
+      // aggregate listings/{id}.watchCount, which the onWatch* triggers own.
+      match /watches/{listingId} {
+        allow read, write: if isUser(uid);
+      }
+
       // Notifications are written only by Cloud Functions. If clients could
       // create these, anyone could spam anyone (or themselves) with fake
       // "your item sold" notices. The owner may only flip `read`.
@@ -200,13 +207,14 @@ service cloud.firestore {
         && request.resource.data.viewCount == 0
         && request.resource.data.requestCount == 0
         && request.resource.data.hotScore == 0
+        && request.resource.data.watchCount == 0
         && request.resource.data.openReportCount == 0
         && geoOk(request.resource.data);
 
       allow update: if isUser(resource.data.sellerId)
         && geoOk(request.resource.data)
         // Counters and scores are function-territory.
-        && !changed(['viewCount', 'requestCount', 'hotScore', 'openReportCount', 'sellerId'])
+        && !changed(['viewCount', 'requestCount', 'hotScore', 'watchCount', 'openReportCount', 'sellerId'])
         // An owner may archive or reactivate their own listing, but may not
         // lift an auto-hide -- otherwise the circuit breaker is a suggestion.
         && (resource.data.status != 'hidden' || request.resource.data.status == 'hidden')

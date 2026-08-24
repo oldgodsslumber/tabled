@@ -32,6 +32,7 @@ window.Store = (function () {
   var myUid = null;
   var myProfile = null;
   var blockedSet = Object.create(null);   /* uids I have blocked */
+  var watchSet = Object.create(null);     /* listing ids I'm watching */
   var myRole = null;                     /* 'admin' | 'moderator' | null */
   var listeners = [];                     /* fns to call when session changes */
 
@@ -409,6 +410,7 @@ window.Store = (function () {
           body.createdAt = fb.serverTimestamp();
           body.viewCount = 0;
           body.requestCount = 0;
+          body.watchCount = 0;
           body.hotScore = 0;
           body.openReportCount = 0;
           batch.set(ref, body);
@@ -636,6 +638,20 @@ window.Store = (function () {
       },
       loadBlocked: function (uid) {
         return fb.getDocs(col('users', uid, 'blocked')).then(function (qs) {
+          var out = [];
+          qs.forEach(function (s) { out.push(s.id); });
+          return out;
+        });
+      },
+
+      /* ---- Watchlist ---- The client only ever writes its OWN watch doc; the
+       * onWatch* triggers keep listings/{id}.watchCount. */
+      setWatch: function (uid, listingId, on) {
+        var ref = docRef('users', uid, 'watches', listingId);
+        return on ? fb.setDoc(ref, { savedAt: fb.serverTimestamp() }) : fb.deleteDoc(ref);
+      },
+      loadWatches: function (uid) {
+        return fb.getDocs(col('users', uid, 'watches')).then(function (qs) {
           var out = [];
           qs.forEach(function (s) { out.push(s.id); });
           return out;
@@ -1056,7 +1072,7 @@ window.Store = (function () {
           countryCode: 'US', state: 'FL',
           eventId: null, status: 'active',
           createdAt: now - hours * 3600000, updatedAt: now - hours * 3600000,
-          viewCount: views, requestCount: reqs, hotScore: 0, openReportCount: 0
+          viewCount: views, requestCount: reqs, watchCount: (reqs * 2 + 1), hotScore: 0, openReportCount: 0
         };
         var es = rows.map(function (r, i) {
           return {
@@ -1207,7 +1223,7 @@ window.Store = (function () {
         var existing = db.listings.filter(function (x) { return x.id === id; })[0];
         var l = existing || {
           id: id, createdAt: Date.now(), viewCount: 0, requestCount: 0,
-          hotScore: 0, openReportCount: 0
+          watchCount: 0, hotScore: 0, openReportCount: 0
         };
         ['sellerId', 'sellerName', 'sellerPhoto', 'title', 'fulfillment',
           'locationLabel', 'geoPoint', 'geohash', 'countryCode', 'state',
@@ -1326,6 +1342,27 @@ window.Store = (function () {
       },
       loadBlocked: function (uid) {
         return Promise.resolve(Object.keys(db.blocked[uid] || {}));
+      },
+
+      /* Watchlist, demo edition: no trigger, so adjust the listing's watchCount
+       * here the same way the onWatch* functions would. */
+      setWatch: function (uid, listingId, on) {
+        db.watches = db.watches || {};
+        db.watches[uid] = db.watches[uid] || {};
+        var l = db.listings.filter(function (x) { return x.id === listingId; })[0];
+        var was = !!db.watches[uid][listingId];
+        if (on && !was) {
+          db.watches[uid][listingId] = Date.now();
+          if (l) l.watchCount = (l.watchCount || 0) + 1;
+        } else if (!on && was) {
+          delete db.watches[uid][listingId];
+          if (l) l.watchCount = Math.max(0, (l.watchCount || 0) - 1);
+        }
+        save();
+        return Promise.resolve();
+      },
+      loadWatches: function (uid) {
+        return Promise.resolve(Object.keys((db.watches && db.watches[uid]) || {}));
       },
 
       /* ---- Requests & chat (M4), demo edition ----
@@ -2102,6 +2139,11 @@ window.Store = (function () {
       .then(function (list) {
         blockedSet = Object.create(null);
         list.forEach(function (id) { blockedSet[id] = true; });
+        return backend.loadWatches(myUid);
+      })
+      .then(function (watchIds) {
+        watchSet = Object.create(null);
+        watchIds.forEach(function (id) { watchSet[id] = true; });
         startRequestWatch();
         notify();
         return myProfile;
@@ -2109,6 +2151,7 @@ window.Store = (function () {
   }
 
   function endSession() {
+    watchSet = Object.create(null);
     if (stopRequestWatch) { stopRequestWatch(); stopRequestWatch = null; }
     myRequests = [];
     myUid = null;
@@ -2148,6 +2191,22 @@ window.Store = (function () {
      * query, so it has to be synchronous) ---- */
     isBlocked: function (uid) { return !!blockedSet[uid]; },
     blockedList: function () { return Object.keys(blockedSet); },
+    isWatching: function (id) { return !!watchSet[id]; },
+    watchlistIds: function () { return Object.keys(watchSet); },
+    /* Optimistic: flip the local set immediately (so the listing button and
+     * count update instantly), persist in the background, revert on failure. */
+    toggleWatch: function (id) {
+      var on = !watchSet[id];
+      if (on) watchSet[id] = true; else delete watchSet[id];
+      notify();
+      return backend.setWatch(myUid, id, on).then(function () { return on; })
+        .catch(function (err) {
+          if (on) delete watchSet[id]; else watchSet[id] = true;
+          notify();
+          throw err;
+        });
+    },
+
     block: function (target) {
       return backend.block(myUid, target).then(function () {
         blockedSet[target] = true;

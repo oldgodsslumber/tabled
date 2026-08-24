@@ -22,7 +22,7 @@
 
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
-const { onDocumentCreated, onDocumentUpdated } = require('firebase-functions/v2/firestore');
+const { onDocumentCreated, onDocumentUpdated, onDocumentDeleted } = require('firebase-functions/v2/firestore');
 const { defineSecret } = require('firebase-functions/params');
 const { setGlobalOptions } = require('firebase-functions/v2');
 const admin = require('firebase-admin');
@@ -1950,3 +1950,32 @@ function requireAuth(req) {
     throw new HttpsError('unauthenticated', 'Sign in first');
   }
 }
+
+/* ---- watchCount ----------------------------------------------------------
+ * A user saves a listing by writing users/{uid}/watches/{listingId} (allowed by
+ * rules on their own subcollection). The public watcher COUNT lives on the
+ * listing, and like every other counter it is function-owned — clients can't
+ * touch listings/{id}.watchCount. Create/delete triggers (not "written") keep
+ * it exact: a re-save can't double-count. increment(-1) can't go below 0 in
+ * normal flow, but a stray double-delete is floored client-side on read. */
+exports.onWatchCreate = onDocumentCreated('users/{uid}/watches/{listingId}', async (event) => {
+  const listingId = event.params.listingId;
+  try {
+    await db.collection('listings').doc(listingId)
+      .update({ watchCount: admin.firestore.FieldValue.increment(1) });
+  } catch (e) {
+    /* The listing may have been deleted between save and trigger — nothing to
+     * count, and the orphan watch doc is harmless. */
+    console.warn('onWatchCreate: could not bump', listingId, e.message);
+  }
+});
+
+exports.onWatchDelete = onDocumentDeleted('users/{uid}/watches/{listingId}', async (event) => {
+  const listingId = event.params.listingId;
+  try {
+    await db.collection('listings').doc(listingId)
+      .update({ watchCount: admin.firestore.FieldValue.increment(-1) });
+  } catch (e) {
+    console.warn('onWatchDelete: could not decrement', listingId, e.message);
+  }
+});

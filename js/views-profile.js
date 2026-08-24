@@ -130,6 +130,7 @@ window.ProfileView = (function () {
         (mine
           ? '<div class="profile-actions">' +
               '<a class="btn ghost" href="#/settings">Edit profile</a>' +
+              '<a class="btn ghost" href="#/watchlist">Watchlist</a>' +
               '<a class="btn" href="#/create">New listing</a>' +
             '</div>'
           /* No "see what they're selling" button any more - their listings are

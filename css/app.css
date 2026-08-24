@@ -1180,6 +1180,12 @@ select {
 }
 .bgg-badge:hover { filter: brightness(1.12); }
 
+/* ---- Watch / watchlist --------------------------------------------------- */
+.watch-row { display: flex; align-items: center; gap: .7rem; margin: .1rem 0 .4rem; }
+.watch-btn.on { color: var(--navy); border-color: var(--navy); background: var(--navy-050); }
+.watch-count { color: var(--muted); font-size: .85rem; }
+.watch-count.solo { margin: .1rem 0 .5rem; }
+
 /* ---- Lots (Phase 3) ------------------------------------------------------ */
 
 .lot-field { border-top: 1px dashed var(--line); padding-top: .7rem; }

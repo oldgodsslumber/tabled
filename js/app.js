@@ -33,6 +33,7 @@ window.App = (function () {
     profile:  { render: function (root, p) { ProfileView.render(root, p); } },
     me:       { render: function (root, p) { ProfileView.render(root, {}); }, nav: 'me', auth: true },
     settings: { render: function (root, p) { ProfileView.settings(root); }, auth: true },
+    watchlist:{ render: function (root, p) { WatchlistView.render(root); }, auth: true },
     /* First-run profile setup. Not in the nav; the router forces a new account
      * here until it has set a general area (see route_render). */
     onboard:  { render: function (root, p) { ProfileView.onboard(root); }, auth: true },

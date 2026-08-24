@@ -85,6 +85,8 @@ window.ListingView = (function () {
           Safety.menuHtml('listing', l.id, l.title || (l.gameNames && l.gameNames[0]), l.sellerId) +
         '</div>' +
 
+        watchRowHtml(l, mine) +
+
         (ful.length ? '<div class="ful-row">' + ful.map(function (f) {
           return '<span class="badge">' + U.esc(f) + '</span>';
         }).join('') + '</div>' : '') +
@@ -155,6 +157,50 @@ window.ListingView = (function () {
         });
       });
     });
+
+    var wbtn = U.$('#watch-toggle', root);
+    if (wbtn) wbtn.addEventListener('click', function () {
+      var willWatch = !Store.isWatching(l.id);
+      /* Optimistic: flip the button and nudge the count immediately; the store
+       * persists in the background and reverts its own set on failure. */
+      applyWatchUI(root, willWatch, (l.watchCount || 0) + (willWatch ? 1 : -1));
+      Store.toggleWatch(l.id).catch(function (err) {
+        console.error('[tabled] watch toggle failed', err);
+        applyWatchUI(root, Store.isWatching(l.id), l.watchCount || 0);
+        U.toast('Could not update your watchlist', 'warn');
+      });
+    });
+  }
+
+  /* The "watching" toggle + count. Hidden as a toggle on your own listing --
+   * you manage it, you don't watch it -- but you still see how many others are.
+   * The count is purely a popularity signal; nobody can see WHO is watching. */
+  function watchRowHtml(l, mine) {
+    if (mine) {
+      return l.watchCount ? '<p class="watch-count solo">' + watchCountText(l.watchCount) + '</p>' : '';
+    }
+    var watching = Store.isWatching(l.id);
+    return '<div class="watch-row">' +
+      '<button class="btn ghost small watch-btn' + (watching ? ' on' : '') +
+        '" id="watch-toggle" aria-pressed="' + watching + '">' +
+        (watching ? '★ Watching' : '☆ Watch') +
+      '</button>' +
+      '<span class="watch-count" id="watch-count">' +
+        (l.watchCount ? watchCountText(l.watchCount) : '') + '</span>' +
+    '</div>';
+  }
+
+  function watchCountText(n) { return '★ ' + n + ' watching'; }
+
+  function applyWatchUI(root, watching, count) {
+    var btn = U.$('#watch-toggle', root);
+    if (btn) {
+      btn.classList.toggle('on', watching);
+      btn.setAttribute('aria-pressed', watching);
+      btn.textContent = watching ? '★ Watching' : '☆ Watch';
+    }
+    var cnt = U.$('#watch-count', root);
+    if (cnt) cnt.textContent = count > 0 ? watchCountText(count) : '';
   }
 
   /* "1 game" reads wrong on a listing holding a three-game lot. Count what is
