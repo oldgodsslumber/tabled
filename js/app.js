@@ -252,8 +252,11 @@ window.App = (function () {
       : 'Demo mode — sample data in this browser only. ' +
         'Add your Firebase config in js/firebase-config.js to go live.');
     if (reason) console.info('[tabled] demo mode:', reason);
-    /* Resolve the boot gate ourselves; there's no auth service to wait on. */
-    setUser(null);
+    /* The landing's "Take a look around" links to ?demo=1&enter=1 so a visitor
+     * lands straight in sample browsing in one click. Plain ?demo=1 (what the
+     * tests use) still shows the gate first. */
+    if (/[?&]enter=1/.test(location.search)) authApi.signIn();
+    else setUser(null);
   }
 
   function setBanner(text) {
@@ -286,7 +289,9 @@ window.App = (function () {
       badge.hidden = n === 0;
     });
 
-    U.$('#gate-signin').addEventListener('click', signIn);
+    /* Every sign-in CTA on the landing page (hero + closing) triggers the same
+     * flow; the id stays on the first for continuity. */
+    U.$$('[data-signin]').forEach(function (b) { b.addEventListener('click', signIn); });
 
     /* If firebase-config.js never reports in — a 404, a syntax error, a blocked
      * CDN — fall through to demo mode rather than leaving a spinner forever.

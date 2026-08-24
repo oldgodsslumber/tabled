@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/app.css?v=20260824a">
+<link rel="stylesheet" href="css/app.css?v=20260824b">
 </head>
 <body>
 
@@ -33,15 +33,99 @@
 </div>
 
 <div id="gate" hidden>
-  <div class="gate-inner">
-    <div class="logo">T</div>
-    <h1>Tabled</h1>
-    <p>Buy, sell and trade used board games with people near you — without the
-       Facebook Marketplace experience.</p>
-    <p><button class="btn" id="gate-signin">Sign in with Google</button></p>
-    <p class="fine">Your email address is never shown to other users. Only your
-       name, photo and the general area you choose are public.</p>
-    <p class="fine">Free to use. Tabled currently serves the United States only, and never touches money for a sale.</p>
+  <div class="landing">
+
+    <header class="lp-hero">
+      <div class="lp-hero-inner">
+        <div class="lp-brand"><span class="logo">T</span><span class="lp-brandname">Tabled</span></div>
+        <h1 class="lp-title">Trade board games with people near you.</h1>
+        <p class="lp-sub">A free, local marketplace for buying, selling and swapping
+          used board games — no fees, no shipping, no middleman touching your money.</p>
+        <div class="lp-cta">
+          <button class="btn lp-btn" id="gate-signin" data-signin>Sign in with Google</button>
+          <a class="btn ghost lp-btn" href="?demo=1&amp;enter=1">Take a look around</a>
+        </div>
+        <p class="lp-fineline">Free &middot; US-only &middot; we never handle payment</p>
+      </div>
+    </header>
+
+    <section class="lp-section lp-pitch">
+      <p>Buy, sell and trade with real board gamers near you — <em>not</em> the
+        Facebook Marketplace experience. Built around the games, not a junk-drawer
+        &ldquo;toys&rdquo; category.</p>
+    </section>
+
+    <section class="lp-section">
+      <h2 class="lp-h2">How it works</h2>
+      <ol class="lp-steps">
+        <li>
+          <span class="lp-step-n">1</span>
+          <div><strong>List it in seconds.</strong>
+            <p>Search the real BoardGameGeek catalog, pick condition and price, post.</p></div>
+        </li>
+        <li>
+          <span class="lp-step-n">2</span>
+          <div><strong>Someone nearby asks.</strong>
+            <p>They request it, you chat, and you agree on a time and a public spot.</p></div>
+        </li>
+        <li>
+          <span class="lp-step-n">3</span>
+          <div><strong>Meet, swap, confirm.</strong>
+            <p>Hand it over, you both confirm, and you leave each other a rating.</p></div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="lp-section lp-alt">
+      <h2 class="lp-h2">Why Tabled</h2>
+      <div class="lp-cards">
+        <div class="lp-card">
+          <h3>Free, always</h3>
+          <p>No fees, no cut, no ads. The price you agree on is the price.</p>
+        </div>
+        <div class="lp-card">
+          <h3>Real game data</h3>
+          <p>Search 100,000+ games from BoardGameGeek — box art, categories, the works.</p>
+        </div>
+        <div class="lp-card">
+          <h3>Safe meetups</h3>
+          <p>Suggested public meeting spots, and addresses shared only through a
+            one-time card that disappears after pickup.</p>
+        </div>
+        <div class="lp-card">
+          <h3>Private by default</h3>
+          <p>Your location is fuzzed to a ZIP-level point. Only your name, photo and
+            general area are public — your email never is.</p>
+        </div>
+        <div class="lp-card">
+          <h3>Trade, don&rsquo;t just buy</h3>
+          <p>Propose a game-for-game swap, not only cash.</p>
+        </div>
+        <div class="lp-card">
+          <h3>Local, in person</h3>
+          <p>Pickup near you or a hand-off at an event. No shipping, no packing tape.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="lp-section lp-trust">
+      <p><strong>Meet smart.</strong> Tabled connects local traders — it doesn&rsquo;t
+        process payments or guarantee a sale. Reviews build a track record, messages
+        are kept only through a trade, and we serve the United States only for now.</p>
+    </section>
+
+    <section class="lp-section lp-close">
+      <h2 class="lp-h2">Ready to clear some shelf space?</h2>
+      <button class="btn lp-btn" data-signin>Sign in with Google</button>
+      <p class="fine">Your email address is never shown to other users. Only your
+        name, photo and the general area you choose are public.</p>
+      <p class="fine">Free to use. Tabled currently serves the United States only,
+        and never touches money for a sale.</p>
+      <p class="lp-credit"><a class="bgg-badge" href="https://boardgamegeek.com"
+        target="_blank" rel="noopener noreferrer" aria-label="Powered by BoardGameGeek">
+        <span class="bgg-badge-pre">Powered by</span><span class="bgg-badge-mark">BGG</span></a></p>
+    </section>
+
   </div>
 </div>
 
@@ -59,25 +143,25 @@
 
 <!-- Classic scripts, dependency order top to bottom. Bump every ?v= stamp
      together with CFG.BUILD or the browser will serve a mixed set of files. -->
-<script src="js/config.js?v=20260824a"></script>
-<script src="js/util.js?v=20260824a"></script>
-<script src="js/geo.js?v=20260824a"></script>
-<script src="js/timeslots.js?v=20260824a"></script>
-<script src="js/store.js?v=20260824a"></script>
-<script src="js/wikidata.js?v=20260824a"></script>
-<script src="js/bgg.js?v=20260824a"></script>
-<script src="js/safety.js?v=20260824a"></script>
-<script src="js/views-feed.js?v=20260824a"></script>
-<script src="js/views-listing.js?v=20260824a"></script>
-<script src="js/views-create.js?v=20260824a"></script>
-<script src="js/views-profile.js?v=20260824a"></script>
-<script src="js/views-thread.js?v=20260824a"></script>
-<script src="js/views-dashboard.js?v=20260824a"></script>
-<script src="js/views-admin.js?v=20260824a"></script>
-<script src="js/app.js?v=20260824a"></script>
+<script src="js/config.js?v=20260824b"></script>
+<script src="js/util.js?v=20260824b"></script>
+<script src="js/geo.js?v=20260824b"></script>
+<script src="js/timeslots.js?v=20260824b"></script>
+<script src="js/store.js?v=20260824b"></script>
+<script src="js/wikidata.js?v=20260824b"></script>
+<script src="js/bgg.js?v=20260824b"></script>
+<script src="js/safety.js?v=20260824b"></script>
+<script src="js/views-feed.js?v=20260824b"></script>
+<script src="js/views-listing.js?v=20260824b"></script>
+<script src="js/views-create.js?v=20260824b"></script>
+<script src="js/views-profile.js?v=20260824b"></script>
+<script src="js/views-thread.js?v=20260824b"></script>
+<script src="js/views-dashboard.js?v=20260824b"></script>
+<script src="js/views-admin.js?v=20260824b"></script>
+<script src="js/app.js?v=20260824b"></script>
 
 <!-- Module, so it loads after everything above and can use import syntax. -->
-<script type="module" src="js/firebase-config.js?v=20260824a"></script>
+<script type="module" src="js/firebase-config.js?v=20260824b"></script>
 
 </body>
 </html>
