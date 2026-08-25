@@ -472,6 +472,10 @@ window.Feed = (function () {
     var selM = U.$('select[data-f="mechanic"]', m.el);
     if (selM) selM.addEventListener('change', function () { draft.mechanic = selM.value || undefined; });
 
+    /* A link inside the filter sheet (e.g. "Set it now" -> settings) navigates
+     * away; close the sheet so it doesn't sit stranded over the new page. */
+    U.on(m.el, 'a[href^="#/"]', function () { m.close(); });
+
     U.on(m.el, '[data-tag]', function (e, t) {
       var tag = t.dataset.tag;
       var i = draftTags.indexOf(tag);

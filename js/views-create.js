@@ -787,6 +787,10 @@ window.CreateView = (function () {
         if (!(e.mechanics && e.mechanics.length) && game.mechanics && game.mechanics.length) {
           e.mechanics = game.mechanics.slice();
         }
+        /* Capture the box art now, so the listing's cover falls back to it even
+         * if the seller adds no photos of their own (and regardless of whether
+         * details had finished loading at save time). */
+        if (!e.coverImage && game.imageUrl) e.coverImage = game.imageUrl;
       });
       drawEntries();
     });

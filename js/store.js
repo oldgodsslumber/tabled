@@ -130,7 +130,7 @@ window.Store = (function () {
         }
       }
       if (!cover) {
-        cover = (e.photos && e.photos[0]) || (g && g.imageUrl) || null;
+        cover = (e.photos && e.photos[0]) || e.coverImage || (g && g.imageUrl) || null;
       }
     });
 
