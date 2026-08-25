@@ -74,22 +74,36 @@ firebase functions:secrets:set BGG_API_TOKEN
 firebase deploy --only functions:searchGames,functions:getGameDetails
 ```
 
-## 3. Geocoding key — ten minutes
+## 3. Geocoding key — DONE, but writes still don't land
 
-Still a placeholder, so `geocodeArea` throws `failed-precondition` on every
-call before it ever reaches Google — silently, since that branch logs nothing.
-Nothing in the database has a `geoPoint`, distance search returns nothing, the
-safe-spot picker has no centre, and the address flow degrades to storing a bare
-ZIP. The most visible hole in the live app, and the one that looks healthy in
-the logs.
+The key is **set and working**. `GEOCODING_API_KEY` holds version 2 (version 1,
+the placeholder, is destroyed) and `geocodeArea` is deployed bound to it. The two
+project-level faults behind the old symptom were fixed on 2026-08-24: the
+Geocoding API was disabled on the project, and the key was API-restricted to
+`geolocation.googleapis.com` instead of `geocoding-backend.googleapis.com`.
 
-Enable the Geocoding API in Google Cloud Console, create a key, restrict it to
-that API, then:
+**What is still broken is the write, not the lookup.** As of 2026-08-25 no
+document in the project has ever had a `geoPoint` — not one user, not one
+listing — even though the callable is reachable (an unauthenticated POST gets
+the function's own `requireAuth` 401, and the CORS preflight is 204) and is
+being called constantly.
 
-```sh
-firebase functions:secrets:set GEOCODING_API_KEY
-firebase deploy --only functions:geocodeArea
-```
+The pattern points at the profile write, not the geocoder:
+
+| when | geocoder | patch contains geoPoint | area saved? |
+|---|---|---|---|
+| before the 2026-08-24 fix | failing | no | **yes** |
+| after the fix | working | yes | **no** |
+
+Two brand-new accounts have been lost to it — Robot Maker (3 attempts,
+2026-08-25 03:04Z) and Erik Blomquist (5 attempts, 2026-08-25 12:28Z). Both
+docs' `updateTime` still equals their `createTime`.
+
+Next step is to read the actual client-side error from a signed-in session, and
+to confirm the DEPLOYED `firestore.rules` match repo HEAD — a rules rejection on
+a payload carrying a `geoPoint` fits every observation. This is the same shape as
+the 2026-08-22 signup bug, where the create rule required a field the client had
+stopped sending.
 
 ## 4. Run one real trade end to end
 
