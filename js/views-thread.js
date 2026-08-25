@@ -36,9 +36,20 @@ window.ThreadView = (function () {
   function sizeThread(root) {
     var el = U.$('.thread', root || document);
     if (!el) return;
-    var top = el.getBoundingClientRect().top + window.scrollY;
+    var rect = el.getBoundingClientRect();
+    var top = rect.top + window.scrollY;
     var nav = U.$('#nav');
-    var navH = (nav && !nav.hidden) ? nav.offsetHeight : 0;
+
+    /* Only reserve room for the nav when it is actually BELOW the thread. On
+     * desktop it sits in the header instead, and subtracting its height there
+     * would shrink the thread by a bar that isn't in the way -- stranding the
+     * composer above the fold. Asked of the layout rather than of a media
+     * query, so it stays right if the breakpoint ever moves. */
+    var navH = 0;
+    if (nav && !nav.hidden && nav.getBoundingClientRect().top > rect.top) {
+      navH = nav.offsetHeight;
+    }
+
     var h = Math.max(320, window.innerHeight - top - navH);
     el.style.setProperty('--thread-h', h + 'px');
   }

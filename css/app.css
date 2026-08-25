@@ -33,6 +33,20 @@
   --r-lg: 20px;
   --shadow: 0 1px 2px rgba(23, 26, 46, .06), 0 6px 20px rgba(23, 26, 46, .06);
   --tap: 44px;
+
+  /* Content measures. "Desktop width" is not one number: a grid of cards wants
+     the screen, a form wants a readable line length, and a chat wants something
+     between. Mobile ignores all three -- everything is one column under
+     1024px -- so these only take effect in the desktop block at the foot of
+     this file. */
+  --page-wide:   1200px;   /* feed, watchlist, profile, admin */
+  --page-mid:     820px;   /* listing detail, thread, dashboard */
+  --page-narrow:  640px;   /* every form */
+
+  /* Height of the navy bar on desktop. The nav is pinned against this, so it
+     has to be a known number rather than whatever the padding adds up to --
+     guessing it is what makes stacked sticky headers drift apart on scroll. */
+  --topbar-h: 3rem;
 }
 
 * { box-sizing: border-box; }
@@ -1474,6 +1488,128 @@ select {
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 #toast.warn { background: var(--warn); }
 #toast.bad  { background: var(--bad); }
+
+/* ---- Desktop (>= 1024px) --------------------------------------------------
+ *
+ * Everything above this line is the mobile app and is deliberately untouched.
+ * The whole desktop layout lives in this one block, which is the same bargain
+ * the rest of the file makes at the top: one shell-level breakpoint, not a
+ * breakpoint per view.
+ *
+ * Two things change. The 640px cap becomes a three-step measure, so a card grid
+ * can use the screen while a form keeps a readable line length. And the tab bar
+ * stops being a tab bar -- a thumb rail pinned to the bottom of a monitor
+ * nobody is holding -- and merges into the navy header instead.
+ */
+@media (min-width: 1024px) {
+
+  /* The nav is lifted out of the bottom of the page and into the header
+     WITHOUT moving it in the DOM: body is already a flex column, so `order`
+     re-sequences it, and a negative margin equal to the bar height pulls it up
+     into the same band as the brand. Keeping the element where it is means
+     App.setNav() ('#nav [data-nav]') and the onboarding `navBar.hidden` toggle
+     go on working untouched. */
+  .topbar     { order: 0; height: var(--topbar-h); padding-block: 0; }
+  #nav        { order: 1; }
+  #env-banner { order: 2; }
+  #boot, #gate { order: 3; }
+  #view       { order: 4; }
+
+  #nav {
+    position: sticky;
+    top: 0;
+    z-index: 41;
+    height: var(--topbar-h);
+    margin-top: calc(-1 * var(--topbar-h));
+    background: none;
+    border-top: 0;
+    padding-bottom: 0;
+    justify-content: center;
+    gap: .25rem;
+    /* The bar spans the full width to centre its buttons, which would otherwise
+       swallow clicks meant for the brand and the build-tag tooltip underneath. */
+    pointer-events: none;
+  }
+  #nav button {
+    pointer-events: auto;
+    flex: none;
+    flex-direction: row;
+    gap: .45rem;
+    min-height: 0;
+    height: var(--topbar-h);
+    padding: 0 1rem;
+    font-size: .85rem;
+    color: rgba(250, 247, 236, .7);
+    box-shadow: inset 0 -2px 0 transparent;
+  }
+  #nav button .ico { font-size: 1rem; }
+  #nav button:hover { color: var(--cream); }
+  #nav button.on {
+    color: var(--cream);
+    box-shadow: inset 0 -2px 0 var(--amber);
+  }
+
+  /* Wide by default; the narrow views cap themselves below. The bottom padding
+     was only ever there to clear the tab bar that no longer sits there.
+
+     `width: 100%` is load-bearing and not decoration. body is a column flex
+     container, and an `auto` cross-axis margin on a flex item suppresses the
+     default `stretch` -- so `margin: 0 auto` alone leaves main shrink-wrapped to
+     its content instead of filling to max-width. That is why the feed rendered
+     as one ~380px column of cards on a 1440px screen rather than the two the
+     640px cap should already have given: main was never 640 wide either. */
+  main {
+    width: 100%;
+    max-width: var(--page-wide);
+    padding: 1.5rem 1.5rem 3rem;
+  }
+
+  /* .form-page carries no max-width of its own -- it has always relied on
+     main's 640px cap -- so without this every form stretches to 1200px. */
+  .form-page { max-width: var(--page-narrow); }
+  .detail,
+  .dash      { max-width: var(--page-mid); }
+  .form-page, .detail, .dash { margin-inline: auto; }
+
+  /* A 1200px-wide search field looks like a mistake. The tools row is capped to
+     match, so `.filter-btn`'s `margin-left: auto` parks Filters at the end of
+     the sorts rather than marooning it 800px away at the far right. */
+  .feed-head .searchbar,
+  .feed-head .feed-tools { max-width: 32rem; }
+
+  /* Three buttons sharing 1200px is not a button row, it's a banner. They only
+     stretch (`flex: 1`) because on a phone they have to fill the width. */
+  .profile-actions { max-width: var(--page-mid); }
+  .profile-actions .btn { flex: 0 1 auto; min-width: 10rem; }
+
+  /* 220px cards five-across read cramped once there's a mouse pointer. */
+  .grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+
+  /* The chat bleeds to the viewport edges on mobile via negative margins. Once
+     it is a centred column that bleed has nothing to bleed into, so it becomes
+     a panel instead. */
+  .thread {
+    max-width: var(--page-mid);
+    margin: 0 auto;
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    overflow: hidden;
+    background: var(--paper);
+  }
+
+  /* Was offset to clear the tab bar. */
+  #toast { bottom: 1.5rem; }
+}
+
+/* Pointer-only affordances. Gated on (hover: hover) so a touch device never
+   gets a lift stuck on the last card tapped. */
+@media (hover: hover) {
+  .card { transition: transform .12s ease-out, box-shadow .12s ease-out; }
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 2px 4px rgba(23, 26, 46, .07), 0 12px 28px rgba(23, 26, 46, .10);
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
