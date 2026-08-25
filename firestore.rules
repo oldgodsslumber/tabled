@@ -58,10 +58,15 @@ service cloud.firestore {
     //
     // Mirrored in js/config.js (CFG.GEO) and functions/index.js.
     function usPoint(p) {
+      // latlng coordinates in Security Rules are METHODS -- latitude(),
+      // longitude() -- not properties. Reading them as properties made every
+      // comparison operate on a function reference, so usPoint returned false
+      // for every real GeoPoint and geoOk rejected the write. This never
+      // surfaced until geocoding started producing points.
       return p == null || (
-        p.latitude >= 18 && p.latitude <= 72 && (
-          (p.longitude >= -180 && p.longitude <= -66) ||
-          (p.longitude >= 172 && p.longitude <= 180)
+        p.latitude() >= 18 && p.latitude() <= 72 && (
+          (p.longitude() >= -180 && p.longitude() <= -66) ||
+          (p.longitude() >= 172 && p.longitude() <= 180)
         )
       );
     }
