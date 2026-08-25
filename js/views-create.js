@@ -416,7 +416,7 @@ window.CreateView = (function () {
           e.photos.map(function (p, pi) {
             var safe = U.safeUrl(p);
             return '<div class="shot' + (safe ? '' : ' noimg') + '"' +
-              (safe ? ' style="background-image:url(' + U.attr(safe) + ')"' : '') + '>' +
+              (safe ? ' style="' + U.bgurl(safe) + '"' : '') + '>' +
               '<button class="shot-x" data-rmphoto="' + pi + '" aria-label="Remove photo">&times;</button>' +
             '</div>';
           }).join('') +

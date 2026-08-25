@@ -237,7 +237,7 @@ window.ProfileView = (function () {
       var cover = U.safeUrl(r.coverPhoto);
       return '<li><a class="progress-row" href="#/thread/' + U.attr(r.id) + '">' +
         '<span class="progress-thumb' + (cover ? '' : ' noimg') + '"' +
-          (cover ? ' style="background-image:url(' + U.attr(cover) + ')"' : '') + '>' +
+          (cover ? ' style="' + U.bgurl(cover) + '"' : '') + '>' +
           (cover ? '' : U.esc(U.initials(r.gameName || 'Game'))) + '</span>' +
         '<span class="grow">' +
           '<strong>' + U.esc(r.gameName || 'Game') + '</strong>' +

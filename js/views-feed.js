@@ -87,7 +87,7 @@ window.Feed = (function () {
 
     return '<a class="card' + (sold ? ' is-sold' : '') + '" href="#/listing/' + U.attr(l.id) + '">' +
       '<div class="card-photo' + (cover ? '' : ' noimg') + '"' +
-        (cover ? ' style="background-image:url(' + U.attr(cover) + ')"' : '') + '>' +
+        (cover ? ' style="' + U.bgurl(cover) + '"' : '') + '>' +
         (cover ? '' : '<span class="noimg-mark">' + U.esc(U.initials(titleLine)) + '</span>') +
         (deal || soldBadge ? '<div class="card-badges">' + soldBadge + deal + '</div>' : '') +
       '</div>' +

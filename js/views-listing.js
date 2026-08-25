@@ -389,7 +389,7 @@ window.ListingView = (function () {
       (photos.length
         ? '<div class="shots">' + photos.map(function (p) {
             return '<button class="shot" data-full="' + U.attr(p) + '" ' +
-              'style="background-image:url(' + U.attr(p) + ')" aria-label="View photo"></button>';
+              'style="' + U.bgurl(p) + '" aria-label="View photo"></button>';
           }).join('') + '</div>'
         : '') +
 

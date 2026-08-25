@@ -187,8 +187,7 @@ window.ThreadView = (function () {
       tradeOfferHtml(req) +
       '<a class="thread-item" href="#/listing/' + U.attr(req.listingId) + '">' +
         (U.safeUrl(req.coverPhoto)
-          ? '<span class="ti-photo" style="background-image:url(' +
-            U.attr(U.safeUrl(req.coverPhoto)) + ')"></span>'
+          ? '<span class="ti-photo" style="' + U.bgurl(req.coverPhoto) + '"></span>'
           : '<span class="ti-photo noimg"></span>') +
         '<span class="grow">' + U.esc(req.gameName || 'Game') + '</span>' +
         '<span class="price">' +

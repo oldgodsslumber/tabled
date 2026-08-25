@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260824i';
+  var BUILD = '20260824j';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */

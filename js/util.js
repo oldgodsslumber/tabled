@@ -272,6 +272,15 @@ window.U = (function () {
    * file in and swap the inner markup for an <img> — the link + sizing already
    * meet the requirement. One definition, used by the create form and the
    * listing page, so the credit can never go missing from one of them. */
+  /* A background-image CSS value with the URL SINGLE-QUOTED, so a URL that
+   * contains parentheses -- BGG's images carry "filters:format(jpeg)" -- can't
+   * break out of url() and blank the tile. (An <img src> doesn't need this,
+   * which is why the detail box art worked but the feed card didn't.) */
+  function bgurl(u) {
+    var v = safeUrl(u);
+    return v ? "background-image:url('" + attr(v.replace(/'/g, '%27')) + "')" : '';
+  }
+
   function bggBadge() {
     return '<a class="bgg-badge" href="https://boardgamegeek.com" target="_blank" ' +
       'rel="noopener noreferrer" aria-label="Powered by BoardGameGeek">' +
@@ -287,6 +296,6 @@ window.U = (function () {
     money: money, toDate: toDate, ago: ago, monthYear: monthYear, plural: plural,
     resizeImage: resizeImage,
     uid: uid, clamp: clamp, uniq: uniq, initials: initials,
-    avatar: avatar, spinner: spinner, empty: empty, bggBadge: bggBadge
+    avatar: avatar, spinner: spinner, empty: empty, bggBadge: bggBadge, bgurl: bgurl
   };
 })();
