@@ -1906,7 +1906,12 @@ exports.findSafeSpots = onCall(async (req) => {
   try {
     const res = await fetch('https://overpass-api.de/api/interpreter', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      /* OSM's Overpass returns 406 to requests with no User-Agent, so identify
+       * the app -- this is the whole reason safe-spot lookups were failing. */
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Tabled/1.0 (local board game marketplace)'
+      },
       body: 'data=' + encodeURIComponent(query)
     });
     if (!res.ok) throw new Error('Overpass ' + res.status);
