@@ -4,9 +4,12 @@
  *
  *   searchGames / getGameDetails  BGG's XML API sends no CORS headers, so a
  *                                 direct browser fetch is blocked outright.
- *   geocodeArea                   The geocoding key must not ship to clients,
- *                                 and the privacy fuzz has to be applied
- *                                 somewhere the client can't see the true point.
+ *   geocodeArea                   The geocoding key must not ship to clients;
+ *                                 the privacy fuzz has to be applied somewhere
+ *                                 the client can't see the true point; and a
+ *                                 street address must be reducible to a
+ *                                 neighborhood name somewhere it is never
+ *                                 stored, logged or returned.
  *   bumpListingCounter            Incrementing a counter on someone else's
  *                                 listing would otherwise require giving every
  *                                 signed-in user write access to every listing.
@@ -253,6 +256,60 @@ exports.getGameDetails = onCall({ secrets: [BGG_TOKEN], maxInstances: 1 }, async
 
 /* ---- geocodeArea --------------------------------------------------------- */
 
+/* The component of the given type, by short or long name, or null. A straight
+ * find() is enough: a single geocoder result carries at most one component of
+ * any given type. */
+function component(parts, type, short = false) {
+  const hit = (parts || []).find((c) => (c.types || []).includes(type));
+  if (!hit) return null;
+  return (short ? hit.short_name : hit.long_name) || null;
+}
+
+/* The public location label, built from address components and NOTHING else.
+ *
+ * This is the whole privacy mechanism for the address flow: the caller may send
+ * a full street address, and the only thing that survives this function is a
+ * neighborhood-or-town name. `formatted_address` is deliberately never touched
+ * -- echoing it back would put the street address on the client, one careless
+ * assignment away from being stored on a public profile.
+ *
+ * Preference order is finest-to-coarsest, because US neighborhood coverage is
+ * uneven: dense cities have it, most suburbs have nothing and fall through to
+ * the town. New England towns often carry no `locality` at all, which is why
+ * administrative_area_level_3 is in the chain.
+ *
+ * The town is kept alongside the neighborhood ("Riverside, Jacksonville, FL")
+ * rather than dropped. A bare neighborhood name is ambiguous statewide, and the
+ * label's job is to tell a buyer roughly where they'd be driving.
+ *
+ * Never returns the input text -- if components give us nothing, the state is
+ * the floor. Any US result has one, so this cannot come back empty. */
+function areaLabelFrom(parts) {
+  const state = component(parts, 'administrative_area_level_1', true);
+  const sub = component(parts, 'sublocality_level_1') ||
+              component(parts, 'sublocality');
+  const hood = component(parts, 'neighborhood') || sub;
+
+  /* Sublocality outranks locality as the town, but only when it isn't already
+   * doing duty as the neighborhood. New York is the case that forces it: the
+   * locality is "New York" and the sublocality is the borough, and "Park Slope,
+   * Brooklyn" is the address every human would give. Everywhere else there is
+   * no sublocality and this falls straight through to the locality.
+   *
+   * The county is the floor. It only comes up for unincorporated addresses,
+   * where "Brewster County, TX" at least names somewhere. */
+  const town = (sub && sub !== hood ? sub : null) ||
+               component(parts, 'locality') ||
+               component(parts, 'administrative_area_level_3') ||
+               component(parts, 'administrative_area_level_2');
+
+  const bits = [];
+  if (hood && hood !== town) bits.push(hood);
+  if (town) bits.push(town);
+  if (state) bits.push(state);
+  return bits.length ? bits.join(', ') : (state || null);
+}
+
 exports.geocodeArea = onCall({ secrets: [GEOCODING_KEY] }, async (req) => {
   requireAuth(req);
   const text = String(req.data?.text || '').trim();
@@ -315,6 +372,15 @@ exports.geocodeArea = onCall({ secrets: [GEOCODING_KEY] }, async (req) => {
   const admin1 = parts.find((c) => (c.types || []).includes('administrative_area_level_1'));
   const state = admin1 ? admin1.short_name : null;
 
+  /* Built before the fuzz, from the true result. Reverse-geocoding the jittered
+   * point instead would name the wrong neighborhood a good fraction of the time
+   * -- 1.5 miles crosses several of them in any city worth having them in. */
+  const areaLabel = areaLabelFrom(parts);
+  if (!areaLabel) {
+    throw new HttpsError('not-found',
+      "Couldn't work out the area for that address");
+  }
+
   const loc = result.geometry.location;
 
   /* Fuzz here, return only the fuzzed point, and never log the real one. The
@@ -323,8 +389,11 @@ exports.geocodeArea = onCall({ secrets: [GEOCODING_KEY] }, async (req) => {
    * true rather than merely intended. */
   const fuzzed = Geo.jitter(loc.lat, loc.lng, FUZZ_RADIUS_MI);
 
+  /* `text` is deliberately NOT echoed back. It may be a street address, and the
+   * client stores what this returns. areaLabel is the only place-name that
+   * leaves here. */
   return {
-    label: text,
+    areaLabel,
     lat: fuzzed.lat,
     lng: fuzzed.lng,
     geohash: Geo.encode(fuzzed.lat, fuzzed.lng, 9),

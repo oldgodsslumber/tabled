@@ -266,6 +266,26 @@ the displaced point. The true coordinate is never returned, never logged, never
 stored. Fuzzing on *read* instead would be worthless — anyone watching a point
 could average the jitter away.
 
+**The area field takes a street address, and the address never comes back out.**
+`geocodeArea` resolves it and returns a neighborhood label built from
+`address_components` alone — `formatted_address` is deliberately never touched,
+because echoing it would put the street address on the client one careless
+assignment away from a public profile. The input text is not returned either.
+`generalArea` is set from the server's label, never from what was typed.
+
+The client's fallback is asymmetric, and that asymmetry is the point. If
+geocoding is unavailable a **bare ZIP** is stored verbatim — that is what the
+app stored before addresses existed, it reveals nothing an address would, and it
+means no outage can strand a new account at the setup screen. A **street
+address** has no fallback: storing it unresolved would publish someone's
+doorstep, so that path fails and tells them to enter a ZIP instead.
+
+US neighborhood coverage is uneven — dense cities have it, most suburbs have
+nothing and fall through to the town, and New England towns often carry no
+`locality` at all. `areaLabelFrom` walks finest-to-coarsest and bottoms out at
+the state, so it can return something vaguer than asked for but never nothing,
+and never the input.
+
 **Denormalized fields are Cloud-Function-only, including for the document's
 owner.** `verifiedSeller`, `tradeCount`, `avgRating`, `viewCount`, `hotScore`,
 `openReportCount` and all hold/queue state are blocked by `firestore.rules` even
@@ -285,10 +305,12 @@ because a malformed `components` parameter is silently ignored by the API and
 would turn the filter back into no filter with nothing in the response to say
 so.
 
-A non-US area **blocks the save** rather than saving without distance search.
-That distinction is the entire point — the generic "geocoding failed" path is
-deliberately non-fatal, and swallowing the out-of-region rejection alongside it
-would let a non-US listing through the gate built to stop it.
+A non-US area **blocks the save** rather than saving without distance search,
+and swallowing that rejection alongside the generic "geocoding failed" path
+would let a non-US listing through the gate built to stop it. The client keeps
+the three cases apart deliberately: out-of-region blocks, an unresolvable street
+address blocks (there is nothing safe to store), and a plain outage on a bare
+ZIP does not.
 
 `firestore.rules` adds a coarse bounding-box check as defence-in-depth against a
 modified client writing a `geoPoint` directly. Be precise about what that

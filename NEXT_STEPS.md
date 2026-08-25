@@ -76,8 +76,12 @@ firebase deploy --only functions:searchGames,functions:getGameDetails
 
 ## 3. Geocoding key — ten minutes
 
-Still a placeholder, so listings post with no map point and distance search
-returns nothing. The most visible hole in the live app.
+Still a placeholder, so `geocodeArea` throws `failed-precondition` on every
+call before it ever reaches Google — silently, since that branch logs nothing.
+Nothing in the database has a `geoPoint`, distance search returns nothing, the
+safe-spot picker has no centre, and the address flow degrades to storing a bare
+ZIP. The most visible hole in the live app, and the one that looks healthy in
+the logs.
 
 Enable the Geocoding API in Google Cloud Console, create a key, restrict it to
 that API, then:

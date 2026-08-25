@@ -726,8 +726,8 @@ window.ThreadView = (function () {
   }
 
   /* The point we search around. Prefer the profile's stored geoPoint; but a
-   * profile can have a ZIP with no point yet -- e.g. it was saved during the
-   * window when geocoding wasn't reachable. In that case geocode the saved ZIP
+   * profile can have an area with no point yet -- e.g. it was saved during the
+   * window when geocoding wasn't reachable. In that case geocode the saved area
    * on demand, use it now, and quietly backfill the profile so it's fixed for
    * good (and so distance search starts working too). */
   function resolveMyPoint() {
@@ -737,10 +737,14 @@ window.ThreadView = (function () {
     return Store.geocodeArea(me.generalArea).then(function (res) {
       if (!res || typeof res.lat !== 'number') return null;
       var pt = { lat: res.lat, lng: res.lng };
-      Store.saveProfile({
+      var patch = {
         geoPoint: pt, geohash: res.geohash || null,
         countryCode: res.countryCode || null, state: res.state || null
-      }).catch(function () {});   /* backfill is best-effort */
+      };
+      /* Same label upgrade as Store.backfillGeoPoint -- whichever of the two
+       * fires first, the profile ends up consistent. */
+      if (res.areaLabel) patch.generalArea = res.areaLabel;
+      Store.saveProfile(patch).catch(function () {});   /* backfill is best-effort */
       return pt;
     }).catch(function () { return null; });
   }
@@ -755,9 +759,9 @@ window.ThreadView = (function () {
     try { if (v) localStorage.setItem(SPOT_ADDR_KEY, v); else localStorage.removeItem(SPOT_ADDR_KEY); } catch (e) {}
   }
 
-  /* The safe-spot picker. Defaults to searching around the seller's fuzzed ZIP
-   * point, but lets them give a precise location -- a typed address or the
-   * device's current position -- for THAT lookup only. The precise location is
+  /* The safe-spot picker. Defaults to searching around the seller's fuzzed
+   * profile point, but lets them give a precise location -- a typed address or
+   * the device's current position -- for THAT lookup only. The precise location is
    * used to find nearby public places and then discarded: never stored on the
    * profile or a listing, never shown to the other person. A typed address can
    * optionally be remembered in this browser (only) for convenience. */
@@ -872,7 +876,7 @@ window.ThreadView = (function () {
       U.toast('Suggested ' + name + ' in the chat');
     });
 
-    /* Open on the profile's fuzzed ZIP point; if there isn't one, start on the
+    /* Open on the profile's fuzzed area point; if there isn't one, start on the
      * address form instead of a dead end. */
     resolveMyPoint().then(function (pt) {
       var me = Store.me();
@@ -882,7 +886,7 @@ window.ThreadView = (function () {
           'Enter an address above, or use your current location.');
         return;
       }
-      drawLoc(me && me.generalArea ? ('ZIP ' + me.generalArea) : 'your area', false);
+      drawLoc(me && me.generalArea ? me.generalArea : 'your area', false);
       return searchAt(pt);
     }).catch(function () {
       drawLoc('your area', true);

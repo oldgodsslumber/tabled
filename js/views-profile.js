@@ -19,10 +19,59 @@ window.ProfileView = (function () {
     return !!err && /out-of-range/.test(err.code || '');
   }
 
-  /* Location is a 5-digit US ZIP. It geocodes to a tight centroid (then fuzzed),
-   * which is far more precise for distance search than a free-text neighborhood
-   * that could map anywhere in a metro. ZIP+4 is trimmed to the 5-digit prefix. */
+  /* A bare 5-digit ZIP, as opposed to a street address. The distinction decides
+   * what happens when geocoding is unavailable -- see resolveArea. */
   function isZip(z) { return /^\d{5}$/.test(String(z || '').trim()); }
+
+  /* Errors that are the AREA's fault rather than ours: show the message and put
+   * the cursor back in the field. Everything else is a generic save failure. */
+  function isAreaProblem(err) { return !!err && (isOutOfRegion(err) || !!err.areaFatal); }
+  function areaError(message) {
+    var e = new Error(message);
+    e.areaFatal = true;
+    return e;
+  }
+
+  /* Turn what someone typed into the fields we actually store.
+   *
+   * The input may be a full street address. That address is the one thing that
+   * must not survive: it goes to geocodeArea, which resolves it server-side and
+   * hands back a neighborhood label plus a point already fuzzed by a mile or
+   * two. `generalArea` is set from THAT label, never from the typed text, and
+   * the text is dropped on the floor when this resolves. Nothing here writes it
+   * anywhere, and the function deliberately never returns it either.
+   *
+   * The fallback is asymmetric on purpose. A bare ZIP can be stored verbatim if
+   * geocoding is down -- that is exactly what the app stored before, it reveals
+   * nothing an address would, and it keeps an outage from stranding a new
+   * account at the setup screen with no way through. A street address has no
+   * such fallback: saving it unresolved would publish someone's doorstep on a
+   * public profile. So that case fails loudly and points them at the ZIP. */
+  function resolveArea(text) {
+    var typed = String(text || '').trim();
+    return Store.geocodeArea(typed).then(function (res) {
+      if (!res || typeof res.lat !== 'number' || !res.areaLabel) {
+        throw areaError('Could not work out the area for that. Try a nearby ' +
+          'cross street, or just your ZIP code.');
+      }
+      return {
+        generalArea: res.areaLabel,
+        geoPoint: { lat: res.lat, lng: res.lng },
+        geohash: res.geohash || Geo.encode(res.lat, res.lng, 9),
+        countryCode: res.countryCode || null,
+        state: res.state || null
+      };
+    }).catch(function (err) {
+      if (isAreaProblem(err)) throw err;
+      if (!isZip(typed)) {
+        throw areaError('Could not look that address up just now. ' +
+          'Enter just your 5-digit ZIP code instead.');
+      }
+      console.warn('[tabled] geocode unavailable; storing the ZIP alone', err);
+      U.toast('Saved — distance search will switch on once mapping is set up', 'warn');
+      return { generalArea: typed };
+    });
+  }
 
   function render(root, params) {
     var uid = params.id || Store.uid();
@@ -314,14 +363,18 @@ window.ProfileView = (function () {
         '</label>' +
 
         '<label class="field">' +
-          '<span>ZIP code</span>' +
-          '<input id="s-area" type="tel" inputmode="numeric" maxlength="5" ' +
-            'autocomplete="postal-code" pattern="[0-9]{5}" placeholder="02139" ' +
+          '<span>Your area</span>' +
+          '<input id="s-area" type="text" maxlength="120" ' +
+            'autocomplete="street-address" ' +
+            'placeholder="123 Main St, Medford MA — or just 02139" ' +
             'value="' + U.attr(me.generalArea || '') + '">' +
-          '<span class="fine">Used for distance search, and shown to others as the ZIP. ' +
-            'It\'s converted to a map point jittered by up to a mile or two, so browsing never ' +
-            'reveals where anyone actually lives. Tabled serves ' + U.esc(CFG.GEO.label) +
-            ' only right now.</span>' +
+          '<span class="fine">Give a street address and Tabled keeps only the ' +
+            'neighborhood it lands in — the address itself is never stored, never ' +
+            'logged, and never shown to anyone. A ZIP works too; it just places you ' +
+            'in the middle of the whole ZIP rather than your corner of it. Either ' +
+            'way what gets saved is a map point jittered by up to a mile or two, so ' +
+            'browsing never reveals where anyone actually lives. Tabled serves ' +
+            U.esc(CFG.GEO.label) + ' only right now.</span>' +
         '</label>' +
 
         '<div class="form-actions">' +
@@ -369,41 +422,44 @@ window.ProfileView = (function () {
       var name = U.$('#s-name').value.trim();
       if (!name) { U.toast('A display name is required', 'warn'); return; }
       var area = U.$('#s-area').value.trim();
-      if (area && !isZip(area)) { U.toast('Enter a 5-digit ZIP code', 'warn'); U.$('#s-area').focus(); return; }
-      var patch = { displayName: name, bio: U.$('#s-bio').value.trim(), generalArea: area };
+      if (area && area.length < 3) {
+        U.toast('Enter a street address or a 5-digit ZIP code', 'warn');
+        U.$('#s-area').focus();
+        return;
+      }
+      var patch = { displayName: name, bio: U.$('#s-bio').value.trim() };
 
       btn.disabled = true;
       btn.textContent = 'Saving…';
 
-      /* Re-geocode only when the text actually changed. The fuzz is applied
-       * once, server-side, and stored — re-fuzzing an unchanged area on every
+      /* Three cases, and only the first one geocodes.
+       *
+       * Re-resolving an UNCHANGED area would be worse than pointless: the fuzz
+       * is applied once, server-side, and stored, so re-rolling it on every
        * save would let anyone watching the point average the jitter out and
-       * recover the true location. */
-      var geo = (area && area !== (me.generalArea || ''))
-        ? Store.geocodeArea(area).then(function (res) {
-            if (res && typeof res.lat === 'number') {
-              patch.geoPoint = { lat: res.lat, lng: res.lng };
-              patch.geohash = res.geohash || Geo.encode(res.lat, res.lng, 9);
-              patch.countryCode = res.countryCode || null;
-              patch.state = res.state || null;
-            }
-          }).catch(function (err) {
-            /* An out-of-region area is fatal — Tabled is US-only, and saving
-             * the label without a point would leave a profile claiming to be
-             * somewhere the app doesn't serve. Every other geocoding failure
-             * is non-fatal; the profile saves without distance search. */
-            if (isOutOfRegion(err)) throw err;
-            U.toast('Could not map that area — distance search will be off until it resolves', 'warn');
-          })
-        : Promise.resolve();
+       * recover the true location. The field holds the stored label, so leaving
+       * it alone leaves the point alone.
+       *
+       * Clearing the field clears the point with it. A label with no point (or
+       * a point with no label) is a profile that disagrees with itself, and the
+       * orphaned half would go on answering distance queries. */
+      var resolve = Promise.resolve();
+      if (area && area !== (me.generalArea || '')) {
+        resolve = resolveArea(area).then(function (fields) { Object.assign(patch, fields); });
+      } else if (!area) {
+        Object.assign(patch, {
+          generalArea: '', geoPoint: null, geohash: null,
+          countryCode: null, state: null
+        });
+      }
 
-      geo.then(function () { return Store.saveProfile(patch); })
+      resolve.then(function () { return Store.saveProfile(patch); })
         .then(function () {
           U.toast('Profile saved');
           App.go('me', {});
         })
         .catch(function (err) {
-          if (isOutOfRegion(err)) {
+          if (isAreaProblem(err)) {
             U.toast(err.message, 'warn');
             var input = U.$('#s-area');
             if (input) { input.focus(); input.select(); }
@@ -666,14 +722,18 @@ window.ProfileView = (function () {
         '</label>' +
 
         '<label class="field">' +
-          '<span>Your ZIP code</span>' +
-          '<input id="ob-area" type="tel" inputmode="numeric" maxlength="5" ' +
-            'autocomplete="postal-code" pattern="[0-9]{5}" placeholder="02139" ' +
+          '<span>Where you trade from</span>' +
+          '<input id="ob-area" type="text" maxlength="120" ' +
+            'autocomplete="street-address" ' +
+            'placeholder="123 Main St, Medford MA — or just 02139" ' +
             'value="' + U.attr(me.generalArea || '') + '">' +
-          '<span class="fine">Listings search by distance from your ZIP. It becomes a ' +
-            'deliberately fuzzed map point — your exact address is never stored or shown, ' +
-            'and other people see only the ZIP. Tabled serves ' + U.esc(CFG.GEO.label) +
-            ' only right now.</span>' +
+          '<span class="fine">Listings are searched by distance from here. Give a ' +
+            'street address and Tabled keeps only the neighborhood it lands in — ' +
+            'the address itself is never stored, never logged, and never shown. ' +
+            'Prefer not to type one? A ZIP code works, it is just a coarser ' +
+            'starting point. Either way other people see the neighborhood and a ' +
+            'map point jittered by up to a mile or two, never where you live. ' +
+            'Tabled serves ' + U.esc(CFG.GEO.label) + ' only right now.</span>' +
         '</label>' +
 
         '<div class="form-actions">' +
@@ -686,36 +746,29 @@ window.ProfileView = (function () {
       var name = U.$('#ob-name').value.trim();
       var area = U.$('#ob-area').value.trim();
       if (!name) { U.toast('Pick a display name', 'warn'); return; }
-      if (!isZip(area)) { U.toast('Enter a 5-digit ZIP code', 'warn'); U.$('#ob-area').focus(); return; }
+      if (area.length < 3) {
+        U.toast('Enter a street address or a 5-digit ZIP code', 'warn');
+        U.$('#ob-area').focus();
+        return;
+      }
 
       btn.disabled = true;
       btn.textContent = 'Setting up…';
 
-      /* Only an out-of-region area is fatal (Tabled is US-only, and the area is
-       * the one required field). Any OTHER geocoding failure -- including the
-       * key simply not being configured yet -- must NOT block onboarding, or a
-       * new account can't get in at all. In that case the area text saves
-       * without a map point and distance search stays off until it resolves,
-       * exactly as the Edit-profile flow already behaves. */
-      var patch = { displayName: name, generalArea: area };
-      Store.geocodeArea(area).then(function (res) {
-        if (res && typeof res.lat === 'number') {
-          patch.geoPoint = { lat: res.lat, lng: res.lng };
-          patch.geohash = res.geohash || Geo.encode(res.lat, res.lng, 9);
-          patch.countryCode = res.countryCode || null;
-          patch.state = res.state || null;
-        }
-      }).catch(function (err) {
-        if (isOutOfRegion(err)) throw err;
-        console.warn('[tabled] onboarding geocode unavailable', err);
-        U.toast('Saved — distance search will switch on once mapping is set up', 'warn');
-      }).then(function () {
+      /* resolveArea decides what is fatal here, and it is deliberately narrow:
+       * an out-of-region address, or a street address it could not resolve (for
+       * which storing the raw text is not an option). A bare ZIP always gets
+       * through, geocoding up or down, so no outage can leave a brand-new
+       * account stuck on this screen with nowhere to go. */
+      var patch = { displayName: name };
+      resolveArea(area).then(function (fields) {
+        Object.assign(patch, fields);
         return Store.saveProfile(patch);
       }).then(function () {
         U.toast('You\'re all set');
         App.go('feed', {});
       }).catch(function (err) {
-        if (isOutOfRegion(err)) {
+        if (isAreaProblem(err)) {
           U.toast(err.message, 'warn');
           var input = U.$('#ob-area');
           if (input) { input.focus(); input.select(); }

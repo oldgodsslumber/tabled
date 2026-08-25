@@ -1154,7 +1154,7 @@ window.Store = (function () {
             displayName: authUser.displayName || 'You (demo)',
             photoURL: authUser.photoURL || null,
             bio: '',
-            generalArea: '32204',
+            generalArea: 'Riverside, Jacksonville, FL',
             geoPoint: { lat: 30.3125, lng: -81.6795 },
             geohash: Geo.encode(30.3125, -81.6795, 9),
             countryCode: 'US', state: 'FL',
@@ -1197,8 +1197,13 @@ window.Store = (function () {
         }
         var base = { lat: 30.3322, lng: -81.6557 };
         var p = Geo.jitter(base.lat, base.lng, 6);
+        /* Returns a neighborhood LABEL and never the input, exactly like the
+         * real function. Demo mode is where the address flow gets exercised
+         * without a geocoding key, so echoing the typed address back here
+         * would hide the one mistake this whole design exists to prevent. */
         return Promise.resolve({
-          label: text, lat: p.lat, lng: p.lng, geohash: Geo.encode(p.lat, p.lng, 9),
+          areaLabel: 'Riverside, Jacksonville, FL',
+          lat: p.lat, lng: p.lng, geohash: Geo.encode(p.lat, p.lng, 9),
           countryCode: 'US', state: 'FL', demo: true
         });
       },
@@ -2168,10 +2173,15 @@ window.Store = (function () {
       });
   }
 
-  /* Heal a profile that has an area (ZIP) but no map point -- e.g. it was saved
-   * while geocoding was unreachable, which left distance search and safe-spot
-   * lookups broken. Geocode the saved ZIP once and store the point. Best-effort:
-   * a failure just means it retries next session. */
+  /* Heal a profile that has an area but no map point -- e.g. it was saved while
+   * geocoding was unreachable, which left distance search and safe-spot lookups
+   * broken. Geocode the saved area once and store the point. Best-effort: a
+   * failure just means it retries next session.
+   *
+   * It upgrades the LABEL too. Profiles saved before the address flow hold a
+   * bare ZIP, and re-resolving it returns the same area said in words --
+   * "Medford, MA" for "02155". Nothing gets sharper by doing this: a ZIP is all
+   * these profiles ever had, so the label can only be as coarse as the ZIP was. */
   function backfillGeoPoint() {
     if (!myProfile || !myProfile.generalArea || myProfile.geoPoint) return;
     backend.geocodeArea(myProfile.generalArea).then(function (res) {
@@ -2180,6 +2190,7 @@ window.Store = (function () {
         geoPoint: { lat: res.lat, lng: res.lng }, geohash: res.geohash || null,
         countryCode: res.countryCode || null, state: res.state || null
       };
+      if (res.areaLabel) patch.generalArea = res.areaLabel;
       return backend.saveProfile(myUid, patch).then(function () {
         myProfile = Object.assign({}, myProfile, patch);
         notify();
