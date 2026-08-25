@@ -282,9 +282,24 @@ doorstep, so that path fails and tells them to enter a ZIP instead.
 
 US neighborhood coverage is uneven — dense cities have it, most suburbs have
 nothing and fall through to the town, and New England towns often carry no
-`locality` at all. `areaLabelFrom` walks finest-to-coarsest and bottoms out at
+`locality` at all. `areaPartsFrom` walks finest-to-coarsest and bottoms out at
 the state, so it can return something vaguer than asked for but never nothing,
 and never the input.
+
+**When the forward pass finds no neighborhood, a reverse lookup gets a second
+try.** Forward-geocoding an address frequently omits `neighborhood` even where
+Google has one — confirmed against a Medford, MA address that returned a bare
+locality — while reverse-geocoding the same coordinate returns it reliably.
+Different code path, different component set, same data. `neighborhoodAt()`
+costs one extra call, only on addresses the first pass couldn't name, and
+swallows its own failures: a missing neighborhood is a worse label, never a
+failed save.
+
+It runs on the **true** coordinate, before the fuzz — 1.5 miles crosses several
+neighborhoods in any city dense enough to have them, so the displaced point
+would confidently name the wrong one. And it is skipped entirely for a
+`postal_code` result: deepening a ZIP into the neighborhood at its centroid
+invents precision the user deliberately withheld.
 
 **Denormalized fields are Cloud-Function-only, including for the document's
 owner.** `verifiedSeller`, `tradeCount`, `avgRating`, `viewCount`, `hotScore`,

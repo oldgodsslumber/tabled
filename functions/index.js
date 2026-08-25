@@ -284,7 +284,7 @@ function component(parts, type, short = false) {
  *
  * Never returns the input text -- if components give us nothing, the state is
  * the floor. Any US result has one, so this cannot come back empty. */
-function areaLabelFrom(parts) {
+function areaPartsFrom(parts) {
   const state = component(parts, 'administrative_area_level_1', true);
   const sub = component(parts, 'sublocality_level_1') ||
               component(parts, 'sublocality');
@@ -303,11 +303,52 @@ function areaLabelFrom(parts) {
                component(parts, 'administrative_area_level_3') ||
                component(parts, 'administrative_area_level_2');
 
+  return { hood, town, state };
+}
+
+function buildAreaLabel({ hood, town, state }) {
   const bits = [];
   if (hood && hood !== town) bits.push(hood);
   if (town) bits.push(town);
   if (state) bits.push(state);
   return bits.length ? bits.join(', ') : (state || null);
+}
+
+/* Second look for a neighborhood, by REVERSE geocoding the true coordinate.
+ *
+ * Forward-geocoding a street address very often omits `neighborhood` even where
+ * Google plainly has one -- Medford, MA returns a bare locality for addresses
+ * sitting inside neighborhoods that Google Maps renders by name. Reverse
+ * geocoding the same point returns them far more reliably. Different code path,
+ * different component set, same underlying data.
+ *
+ * Costs one extra Geocoding call, and only for addresses the first pass could
+ * not name. Failure is swallowed on purpose: a missing neighborhood is a worse
+ * label, not a broken save, and this must never be able to fail a profile.
+ *
+ * Uses the TRUE point, not the fuzzed one -- 1.5 miles of jitter crosses several
+ * neighborhoods in any city dense enough to have them, so reverse geocoding the
+ * displaced point would confidently name the wrong one. */
+async function neighborhoodAt(lat, lng, key) {
+  const url = 'https://maps.googleapis.com/maps/api/geocode/json' +
+    `?latlng=${encodeURIComponent(`${lat},${lng}`)}` +
+    '&result_type=neighborhood%7Csublocality' +
+    `&key=${encodeURIComponent(key)}`;
+  try {
+    const res = await fetch(url);
+    const body = await res.json();
+    if (body.status !== 'OK' || !body.results?.length) return null;
+    /* Components only, never formatted_address: this response describes a point
+     * derived from someone's street address, and the whole contract is that
+     * nothing address-shaped leaves this function. */
+    const parts = body.results[0].address_components || [];
+    return component(parts, 'neighborhood') ||
+           component(parts, 'sublocality_level_1') ||
+           component(parts, 'sublocality');
+  } catch (err) {
+    console.warn('reverse geocode for neighborhood failed', err?.message);
+    return null;
+  }
 }
 
 exports.geocodeArea = onCall({ secrets: [GEOCODING_KEY] }, async (req) => {
@@ -372,16 +413,26 @@ exports.geocodeArea = onCall({ secrets: [GEOCODING_KEY] }, async (req) => {
   const admin1 = parts.find((c) => (c.types || []).includes('administrative_area_level_1'));
   const state = admin1 ? admin1.short_name : null;
 
-  /* Built before the fuzz, from the true result. Reverse-geocoding the jittered
-   * point instead would name the wrong neighborhood a good fraction of the time
-   * -- 1.5 miles crosses several of them in any city worth having them in. */
-  const areaLabel = areaLabelFrom(parts);
+  const loc = result.geometry.location;
+  const area = areaPartsFrom(parts);
+
+  /* A postal_code result is the one case where we must NOT go looking harder.
+   * Someone who typed "02155" gave us a ZIP, and the reverse lookup at its
+   * centroid would hand back whichever neighborhood happens to sit in the
+   * middle of it -- a place they probably don't live, stated with a confidence
+   * they never offered. Deepening a ZIP into a neighborhood invents precision
+   * the user withheld, which is the opposite of what this field promises. */
+  const fromZip = (result.types || []).includes('postal_code');
+  if (!area.hood && !fromZip) {
+    area.hood = await neighborhoodAt(loc.lat, loc.lng, key);
+  }
+
+  /* Built from the true result, before the fuzz. */
+  const areaLabel = buildAreaLabel(area);
   if (!areaLabel) {
     throw new HttpsError('not-found',
       "Couldn't work out the area for that address");
   }
-
-  const loc = result.geometry.location;
 
   /* Fuzz here, return only the fuzzed point, and never log the real one. The
    * client stores what it's given, so the true coordinate exists nowhere in
