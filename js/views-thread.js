@@ -726,14 +726,43 @@ window.ThreadView = (function () {
     });
   }
 
-  function safeSpotDialog(req) {
+  /* The point we search around. Prefer the profile's stored geoPoint; but a
+   * profile can have a ZIP with no point yet -- e.g. it was saved during the
+   * window when geocoding wasn't reachable. In that case geocode the saved ZIP
+   * on demand, use it now, and quietly backfill the profile so it's fixed for
+   * good (and so distance search starts working too). */
+  function resolveMyPoint() {
     var me = Store.me();
-    if (!me || !me.geoPoint) {
-      U.toast('Set your general area first, in your profile', 'warn');
-      return;
-    }
+    if (me && me.geoPoint) return Promise.resolve(me.geoPoint);
+    if (!me || !me.generalArea) return Promise.resolve(null);
+    return Store.geocodeArea(me.generalArea).then(function (res) {
+      if (!res || typeof res.lat !== 'number') return null;
+      var pt = { lat: res.lat, lng: res.lng };
+      Store.saveProfile({
+        geoPoint: pt, geohash: res.geohash || null,
+        countryCode: res.countryCode || null, state: res.state || null
+      }).catch(function () {});   /* backfill is best-effort */
+      return pt;
+    }).catch(function () { return null; });
+  }
+
+  function safeSpotDialog(req) {
     var m = U.modal('Somewhere safe to meet', U.spinner('Finding public places'));
-    Store.findSafeSpots(me.geoPoint.lat, me.geoPoint.lng).then(function (spots) {
+    resolveMyPoint().then(function (pt) {
+      if (!pt) {
+        m.el.innerHTML = U.empty('Add your ZIP first',
+          'Your ZIP is what we search around. Add or re-save it in your profile, then try again.');
+        return;
+      }
+      return findAndRenderSpots(m, req, pt);
+    }).catch(function (err) {
+      m.el.innerHTML = U.empty('Could not look that up',
+        (err && err.message) || 'Try again in a moment.');
+    });
+  }
+
+  function findAndRenderSpots(m, req, pt) {
+    return Store.findSafeSpots(pt.lat, pt.lng).then(function (spots) {
       if (!spots.length) {
         m.el.innerHTML = U.empty('Nothing found nearby',
           'Pick a public place you both know \u2014 a busy cafe or a police station ' +

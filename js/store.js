@@ -2163,8 +2163,28 @@ window.Store = (function () {
         watchIds.forEach(function (id) { watchSet[id] = true; });
         startRequestWatch();
         notify();
+        backfillGeoPoint();   /* fire-and-forget; doesn't block boot */
         return myProfile;
       });
+  }
+
+  /* Heal a profile that has an area (ZIP) but no map point -- e.g. it was saved
+   * while geocoding was unreachable, which left distance search and safe-spot
+   * lookups broken. Geocode the saved ZIP once and store the point. Best-effort:
+   * a failure just means it retries next session. */
+  function backfillGeoPoint() {
+    if (!myProfile || !myProfile.generalArea || myProfile.geoPoint) return;
+    backend.geocodeArea(myProfile.generalArea).then(function (res) {
+      if (!res || typeof res.lat !== 'number') return;
+      var patch = {
+        geoPoint: { lat: res.lat, lng: res.lng }, geohash: res.geohash || null,
+        countryCode: res.countryCode || null, state: res.state || null
+      };
+      return backend.saveProfile(myUid, patch).then(function () {
+        myProfile = Object.assign({}, myProfile, patch);
+        notify();
+      });
+    }).catch(function (err) { console.warn('[tabled] geoPoint backfill skipped', err); });
   }
 
   function endSession() {
