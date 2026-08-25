@@ -1384,6 +1384,24 @@ select {
 }
 
 .filter-group { margin-bottom: 1.35rem; }
+/* ---- Filter facets (include / exclude chips) ----------------------------- */
+.filter-howto { margin: 0 0 1rem; }
+.facet-search {
+  width: 100%;
+  margin: 0 0 .5rem;
+  padding: .4rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: .9rem;
+}
+.facet-chips { max-height: 190px; overflow-y: auto; padding: 2px; }
+.fchip.inc { background: var(--navy); color: var(--cream); border-color: var(--navy); }
+.fchip.exc { background: var(--bad-bg); color: var(--bad); border-color: var(--bad); }
+/* Active-filter chips in the feed head: excludes read as red "not X". */
+.active-chips .chip.exc {
+  background: var(--bad-bg); color: var(--bad); border-color: var(--bad);
+}
 .reason-chips { display: grid; gap: .45rem; }
 .reason-chips .chip { min-height: 48px; padding: .5rem .9rem; }
 .reason-other .field, .reason-other label { display: block; font-weight: 650; font-size: .85rem; margin-bottom: .3rem; }

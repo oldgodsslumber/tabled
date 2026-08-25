@@ -18,6 +18,50 @@ window.Feed = (function () {
   var loading = false;
   var items = [];
 
+  /* ---- Facet model (include / exclude) ------------------------------------
+   * Every filter is a facet whose URL value is a comma-joined list of tokens; a
+   * leading '!' means exclude. "Fantasy,!Wargame" = include Fantasy, exclude
+   * Wargame. parseFacet turns that into { inc, exc }; facetToStr goes back. */
+  function parseFacet(str) {
+    var inc = [], exc = [];
+    String(str || '').split(',').filter(Boolean).forEach(function (t) {
+      if (t.charAt(0) === '!') exc.push(t.slice(1)); else inc.push(t);
+    });
+    return { inc: inc, exc: exc };
+  }
+  function facetToStr(f) {
+    return f.inc.concat(f.exc.map(function (x) { return '!' + x; })).join(',');
+  }
+  function mapVal(v) { return { v: v, label: v }; }
+
+  /* The six include/exclude facets. Category and Mechanic are long, so they get
+   * a search box; the rest are short chip rows. */
+  var FACETS = [
+    { key: 'category', label: 'Category', search: true,
+      hint: 'Themes from BoardGameGeek — what the game is about.',
+      opts: function () { return CFG.CATEGORIES.map(mapVal); } },
+    { key: 'mechanic', label: 'Mechanic', search: true,
+      hint: 'How it plays — worker placement, tile laying, deck building…',
+      opts: function () { return CFG.MECHANICS.map(mapVal); } },
+    { key: 'condition', label: 'Condition',
+      opts: function () { return CFG.CONDITIONS.map(function (c) {
+        return { v: c.key, label: c.key + ' · ' + c.label, title: c.blurb }; }); } },
+    { key: 'fulfillment', label: 'Fulfillment',
+      opts: function () { return CFG.FULFILLMENT.map(function (f) {
+        return { v: f.key, label: f.label }; }); } },
+    { key: 'payment', label: 'Payment accepted',
+      opts: function () { return CFG.PAYMENT.map(function (pm) {
+        return { v: pm.key, label: pm.label }; }); } },
+    { key: 'tags', label: 'Tags',
+      opts: function () { return CFG.TAGS.map(mapVal); } }
+  ];
+  function facetLabel(k, v) {
+    if (k === 'condition') { var c = CFG.condition(v); return c ? c.label : v; }
+    if (k === 'fulfillment') { var f = CFG.FULFILLMENT.filter(function (x) { return x.key === v; })[0]; return f ? f.label : v; }
+    if (k === 'payment') { var pm = CFG.PAYMENT.filter(function (x) { return x.key === v; })[0]; return pm ? pm.label : v; }
+    return v;
+  }
+
   /* ---- Card -------------------------------------------------------------- */
 
   /* Rendered from the listing's denormalized rollup only — never from the
@@ -114,12 +158,12 @@ window.Feed = (function () {
     var f = {
       q: p.q || '',
       sort: p.sort || 'new',
-      category: p.category || '',
-      mechanic: p.mechanic || '',
-      condition: p.condition || '',
-      fulfillment: p.fulfillment || '',
-      payment: p.payment || '',
-      tags: p.tags ? String(p.tags).split(',').filter(Boolean) : [],
+      category: parseFacet(p.category),
+      mechanic: parseFacet(p.mechanic),
+      condition: parseFacet(p.condition),
+      fulfillment: parseFacet(p.fulfillment),
+      payment: parseFacet(p.payment),
+      tags: parseFacet(p.tags),
       sellerId: p.sellerId || '',
       eventId: p.eventId || '',
       near: null,
@@ -136,9 +180,10 @@ window.Feed = (function () {
 
   function activeCount(p) {
     var n = 0;
-    ['category', 'mechanic', 'condition', 'fulfillment', 'radius', 'payment']
-      .forEach(function (k) { if (p[k]) n++; });
-    if (p.tags) n += String(p.tags).split(',').filter(Boolean).length;
+    ['category', 'mechanic', 'condition', 'fulfillment', 'payment', 'tags'].forEach(function (k) {
+      var f = parseFacet(p[k]); n += f.inc.length + f.exc.length;
+    });
+    if (p.radius) n++;
     return n;
   }
 
@@ -235,26 +280,17 @@ window.Feed = (function () {
    * filter is set two screens away in a sheet. */
   function activeChips(p) {
     var chips = [];
-    if (p.eventId) chips.push({ k: 'eventId', t: 'At this event' });
-    if (p.radius) chips.push({ k: 'radius', t: 'Within ' + p.radius + ' mi' });
-    if (p.category) chips.push({ k: 'category', t: p.category });
-    if (p.mechanic) chips.push({ k: 'mechanic', t: p.mechanic });
-    if (p.condition) chips.push({ k: 'condition', t: CFG.condition(p.condition).label });
-    if (p.fulfillment) {
-      var ful = CFG.FULFILLMENT.filter(function (f) { return f.key === p.fulfillment; })[0];
-      chips.push({ k: 'fulfillment', t: ful ? ful.label : p.fulfillment });
-    }
-    if (p.payment) {
-      var pm = CFG.PAYMENT.filter(function (x) { return x.key === p.payment; })[0];
-      chips.push({ k: 'payment', t: 'Accepts ' + (pm ? pm.label.toLowerCase() : p.payment) });
-    }
-    (p.tags ? String(p.tags).split(',').filter(Boolean) : []).forEach(function (t) {
-      chips.push({ k: 'tag:' + t, t: t });
+    if (p.eventId) chips.push({ drop: 'eventId', t: 'At this event', exc: false });
+    if (p.radius) chips.push({ drop: 'radius', t: 'Within ' + p.radius + ' mi', exc: false });
+    ['category', 'mechanic', 'condition', 'fulfillment', 'payment', 'tags'].forEach(function (k) {
+      var f = parseFacet(p[k]);
+      f.inc.forEach(function (v) { chips.push({ drop: k + ':' + v, t: facetLabel(k, v), exc: false }); });
+      f.exc.forEach(function (v) { chips.push({ drop: k + ':!' + v, t: 'not ' + facetLabel(k, v), exc: true }); });
     });
     if (!chips.length) return '';
     return '<div class="active-chips">' +
       chips.map(function (c) {
-        return '<button class="chip on" data-drop="' + U.attr(c.k) + '">' +
+        return '<button class="chip on' + (c.exc ? ' exc' : '') + '" data-drop="' + U.attr(c.drop) + '">' +
           U.esc(c.t) + ' <span class="x">&times;</span></button>';
       }).join('') +
       '<button class="chip clear-all" data-drop="*">Clear all</button>' +
@@ -285,12 +321,20 @@ window.Feed = (function () {
       if (k === '*') {
         ['radius', 'category', 'mechanic', 'condition', 'fulfillment', 'tags', 'eventId', 'payment']
           .forEach(function (f) { delete next[f]; });
-      } else if (k.indexOf('tag:') === 0) {
-        var drop = k.slice(4);
-        var left = String(next.tags || '').split(',').filter(function (x) { return x && x !== drop; });
-        next.tags = left.length ? left.join(',') : undefined;
-      } else {
+      } else if (k === 'eventId' || k === 'radius') {
         next[k] = undefined;
+      } else {
+        /* "facet:value" (include) or "facet:!value" (exclude) — drop that one. */
+        var ci = k.indexOf(':');
+        var facet = k.slice(0, ci), token = k.slice(ci + 1);
+        var f = parseFacet(next[facet]);
+        if (token.charAt(0) === '!') {
+          var tv = token.slice(1); f.exc = f.exc.filter(function (x) { return x !== tv; });
+        } else {
+          f.inc = f.inc.filter(function (x) { return x !== token; });
+        }
+        var str = facetToStr(f);
+        next[facet] = str || undefined;
       }
       App.go('feed', next);
     });
@@ -359,12 +403,31 @@ window.Feed = (function () {
 
   /* ---- Filter sheet ------------------------------------------------------ */
 
+  function facetGroupHtml(spec, p) {
+    var f = parseFacet(p[spec.key]);
+    return '<div class="filter-group">' +
+      '<h4>' + U.esc(spec.label) + '</h4>' +
+      (spec.hint ? '<p class="fine">' + U.esc(spec.hint) + '</p>' : '') +
+      (spec.search
+        ? '<input class="facet-search" data-fsearch="' + U.attr(spec.key) + '" type="search" ' +
+          'placeholder="Filter ' + U.esc(spec.label.toLowerCase()) + '…" autocomplete="off">'
+        : '') +
+      '<div class="chip-row facet-chips" data-facet="' + U.attr(spec.key) + '">' +
+        spec.opts().map(function (o) {
+          var st = f.exc.indexOf(o.v) !== -1 ? ' exc' : (f.inc.indexOf(o.v) !== -1 ? ' inc' : '');
+          return '<button class="chip fchip' + st + '" data-fv="' + U.attr(o.v) + '"' +
+            (o.title ? ' title="' + U.attr(o.title) + '"' : '') + '>' + U.esc(o.label) + '</button>';
+        }).join('') +
+      '</div>' +
+    '</div>';
+  }
+
   function openFilters() {
     var p = state;
-    var chosenTags = p.tags ? String(p.tags).split(',').filter(Boolean) : [];
     var hasArea = !!(Store.me() && Store.me().geoPoint);
 
     var html =
+      '<p class="filter-howto fine">Tap to <strong>include</strong>, double-tap to <strong>exclude</strong>.</p>' +
       '<div class="filter-group">' +
         '<h4>Distance</h4>' +
         (hasArea
@@ -381,73 +444,7 @@ window.Feed = (function () {
             '<a href="#/settings">Set it now</a></p>') +
       '</div>' +
 
-      '<div class="filter-group">' +
-        '<h4>Category</h4>' +
-        '<select data-f="category">' +
-          '<option value="">Any category</option>' +
-          CFG.CATEGORIES.map(function (c) {
-            return '<option value="' + U.attr(c) + '"' + (p.category === c ? ' selected' : '') + '>' +
-              U.esc(c) + '</option>';
-          }).join('') +
-        '</select>' +
-        '<p class="fine">Themes from BoardGameGeek — what the game is about.</p>' +
-      '</div>' +
-
-      '<div class="filter-group">' +
-        '<h4>Mechanic</h4>' +
-        '<select data-f="mechanic">' +
-          '<option value="">Any mechanic</option>' +
-          CFG.MECHANICS.map(function (c) {
-            return '<option value="' + U.attr(c) + '"' + (p.mechanic === c ? ' selected' : '') + '>' +
-              U.esc(c) + '</option>';
-          }).join('') +
-        '</select>' +
-        '<p class="fine">How the game plays — worker placement, tile laying, deck building…</p>' +
-      '</div>' +
-
-      '<div class="filter-group">' +
-        '<h4>Condition</h4>' +
-        '<div class="chip-row">' +
-          '<button class="chip' + (!p.condition ? ' on' : '') + '" data-f="condition" data-v="">Any</button>' +
-          CFG.CONDITIONS.map(function (c) {
-            return '<button class="chip' + (p.condition === c.key ? ' on' : '') +
-              '" data-f="condition" data-v="' + U.attr(c.key) + '" title="' + U.attr(c.blurb) + '">' +
-              U.esc(c.key) + ' · ' + U.esc(c.label) + '</button>';
-          }).join('') +
-        '</div>' +
-      '</div>' +
-
-      '<div class="filter-group">' +
-        '<h4>Fulfillment</h4>' +
-        '<div class="chip-row">' +
-          '<button class="chip' + (!p.fulfillment ? ' on' : '') + '" data-f="fulfillment" data-v="">Any</button>' +
-          CFG.FULFILLMENT.map(function (f) {
-            return '<button class="chip' + (p.fulfillment === f.key ? ' on' : '') +
-              '" data-f="fulfillment" data-v="' + U.attr(f.key) + '">' + U.esc(f.label) + '</button>';
-          }).join('') +
-        '</div>' +
-      '</div>' +
-
-      '<div class="filter-group">' +
-        '<h4>Payment accepted</h4>' +
-        '<div class="chip-row">' +
-          '<button class="chip' + (!p.payment ? ' on' : '') + '" data-f="payment" data-v="">Any</button>' +
-          CFG.PAYMENT.map(function (pm) {
-            return '<button class="chip' + (p.payment === pm.key ? ' on' : '') +
-              '" data-f="payment" data-v="' + U.attr(pm.key) + '">' + U.esc(pm.label) + '</button>';
-          }).join('') +
-        '</div>' +
-      '</div>' +
-
-      '<div class="filter-group">' +
-        '<h4>Tags <span class="fine">(all selected must match)</span></h4>' +
-        '<div class="chip-row">' +
-          CFG.TAGS.map(function (t) {
-            return '<button class="chip' + (chosenTags.indexOf(t) !== -1 ? ' on' : '') +
-              '" data-tag="' + U.attr(t) + '">' + U.esc(t) + '</button>';
-          }).join('') +
-        '</div>' +
-      '</div>' +
+      FACETS.map(function (spec) { return facetGroupHtml(spec, p); }).join('') +
 
       '<div class="modal-actions sticky">' +
         '<button class="btn ghost" data-act="reset">Clear all</button>' +
@@ -455,33 +452,53 @@ window.Feed = (function () {
       '</div>';
 
     var m = U.modal('Filters', html);
-    var draft = Object.assign({}, p);
-    var draftTags = chosenTags.slice();
+    var draft = Object.assign({}, p);      /* radius + passthrough */
+    var draftFacets = {};
+    FACETS.forEach(function (spec) { draftFacets[spec.key] = parseFacet(p[spec.key]); });
 
+    /* Radius stays single-select (it's a range, not include/exclude). */
     U.on(m.el, '[data-f]', function (e, t) {
-      if (t.tagName === 'SELECT') return;
       var f = t.dataset.f;
       draft[f] = t.dataset.v || undefined;
       U.$$('[data-f="' + f + '"]', m.el).forEach(function (b) {
-        if (b.tagName === 'BUTTON') b.classList.toggle('on', (b.dataset.v || '') === (draft[f] || ''));
+        b.classList.toggle('on', (b.dataset.v || '') === (draft[f] || ''));
       });
     });
 
-    var sel = U.$('select[data-f="category"]', m.el);
-    sel.addEventListener('change', function () { draft.category = sel.value || undefined; });
-    var selM = U.$('select[data-f="mechanic"]', m.el);
-    if (selM) selM.addEventListener('change', function () { draft.mechanic = selM.value || undefined; });
+    /* Single-tap = include, double-tap = exclude, tap-again = clear. The click
+     * timer lets a second tap arrive and cancel the pending include. */
+    function setChip(el, mode) {
+      var key = el.parentNode.dataset.facet;
+      var v = el.dataset.fv;
+      var f = draftFacets[key];
+      var wasInc = f.inc.indexOf(v) !== -1, wasExc = f.exc.indexOf(v) !== -1;
+      f.inc = f.inc.filter(function (x) { return x !== v; });
+      f.exc = f.exc.filter(function (x) { return x !== v; });
+      if (mode === 'inc' && !wasInc) f.inc.push(v);
+      if (mode === 'exc' && !wasExc) f.exc.push(v);
+      el.classList.remove('inc', 'exc');
+      if (f.inc.indexOf(v) !== -1) el.classList.add('inc');
+      else if (f.exc.indexOf(v) !== -1) el.classList.add('exc');
+    }
+    var dblTimer = null;
+    U.on(m.el, '.fchip', function (e, t) {
+      var el = t; clearTimeout(dblTimer);
+      dblTimer = setTimeout(function () { setChip(el, 'inc'); }, 250);
+    }, 'click');
+    U.on(m.el, '.fchip', function (e, t) {
+      clearTimeout(dblTimer); setChip(t, 'exc');
+    }, 'dblclick');
 
-    /* A link inside the filter sheet (e.g. "Set it now" -> settings) navigates
-     * away; close the sheet so it doesn't sit stranded over the new page. */
+    /* Type to narrow a long chip list (category / mechanic). */
+    U.on(m.el, '[data-fsearch]', function (e, t) {
+      var key = t.dataset.fsearch, q = (t.value || '').toLowerCase();
+      U.$$('.facet-chips[data-facet="' + key + '"] .fchip', m.el).forEach(function (c) {
+        c.style.display = c.textContent.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
+      });
+    }, 'input');
+
+    /* A link inside the sheet (e.g. "Set it now" -> settings) closes it. */
     U.on(m.el, 'a[href^="#/"]', function () { m.close(); });
-
-    U.on(m.el, '[data-tag]', function (e, t) {
-      var tag = t.dataset.tag;
-      var i = draftTags.indexOf(tag);
-      if (i === -1) draftTags.push(tag); else draftTags.splice(i, 1);
-      t.classList.toggle('on', i === -1);
-    });
 
     U.on(m.el, '[data-act]', function (e, t) {
       if (t.dataset.act === 'reset') {
@@ -492,7 +509,10 @@ window.Feed = (function () {
         App.go('feed', cleared);
         return;
       }
-      draft.tags = draftTags.length ? draftTags.join(',') : undefined;
+      FACETS.forEach(function (spec) {
+        var str = facetToStr(draftFacets[spec.key]);
+        draft[spec.key] = str || undefined;
+      });
       m.close();
       App.go('feed', draft);
     });

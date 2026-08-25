@@ -155,10 +155,31 @@ window.Store = (function () {
    * Shared by both backends. The cloud backend pre-narrows what it can in the
    * query and then runs this over the results; the demo backend runs it over
    * everything. Either way one implementation decides what a filter means. */
+  /* A facet is {inc:[...], exc:[...]}. A listing PASSES a facet when it holds
+   * NONE of the excluded values AND (no includes, OR at least one included
+   * value). Empty facets pass everything. This one matcher drives every filter
+   * -- category, mechanic, condition, fulfillment, payment, tags. */
+  function facetFail(vals, fac) {
+    if (!fac) return false;
+    var vs = vals || [];
+    var exc = fac.exc || [];
+    for (var i = 0; i < exc.length; i++) { if (vs.indexOf(exc[i]) !== -1) return true; }
+    var inc = fac.inc || [];
+    if (inc.length) {
+      for (var j = 0; j < inc.length; j++) { if (vs.indexOf(inc[j]) !== -1) return false; }
+      return true;
+    }
+    return false;
+  }
+  /* The keys of a boolean-map field (fulfillment / acceptedPayment) that are on. */
+  function onKeys(map) {
+    if (!map) return [];
+    return Object.keys(map).filter(function (k) { return map[k]; });
+  }
+
   function buildPipeline(filters) {
     var f = filters || {};
     var term = f.q ? searchTerm(f.q) : null;
-    var wantTags = f.tags && f.tags.length ? f.tags : null;
 
     return function (items) {
       /* Which listing states this query wants. Default is active-only, which
@@ -175,19 +196,14 @@ window.Store = (function () {
         if (f.eventId && l.eventId !== f.eventId) return false;
 
         if (term && (l.searchTokens || []).indexOf(term) === -1) return false;
-        if (f.category && (l.categories || []).indexOf(f.category) === -1) return false;
-        if (f.mechanic && (l.mechanics || []).indexOf(f.mechanic) === -1) return false;
-        if (f.condition && (l.conditions || []).indexOf(f.condition) === -1) return false;
 
-        /* Tags are AND, not OR — someone filtering for "sleeved + insert" wants
-         * both, not either. Categories stay single-select for the same reason
-         * inverted: two categories is almost always meant as "either". */
-        if (wantTags && !wantTags.every(function (t) { return (l.tags || []).indexOf(t) !== -1; })) {
-          return false;
-        }
-
-        if (f.fulfillment && !(l.fulfillment && l.fulfillment[f.fulfillment])) return false;
-        if (f.payment && !(l.acceptedPayment && l.acceptedPayment[f.payment])) return false;
+        /* Each facet: include OR exclude, any number of values. */
+        if (facetFail(l.categories, f.category)) return false;
+        if (facetFail(l.mechanics, f.mechanic)) return false;
+        if (facetFail(l.conditions, f.condition)) return false;
+        if (facetFail(l.tags, f.tags)) return false;
+        if (facetFail(onKeys(l.fulfillment), f.fulfillment)) return false;
+        if (facetFail(onKeys(l.acceptedPayment), f.payment)) return false;
 
         if (f.near) {
           if (!l.geoPoint) return false;
@@ -563,7 +579,6 @@ window.Store = (function () {
         /* Exactly one array-contains is allowed per query, so text search wins
          * it when present and category falls through to the client. */
         if (term) clauses.push(fb.where('searchTokens', 'array-contains', term));
-        else if (f.category) clauses.push(fb.where('categories', 'array-contains', f.category));
         if (f.sellerId) clauses.push(fb.where('sellerId', '==', f.sellerId));
         if (f.eventId) clauses.push(fb.where('eventId', '==', f.eventId));
 
