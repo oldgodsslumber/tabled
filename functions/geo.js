@@ -5,8 +5,9 @@
  * reaches up into the repo works locally and then fails in production, which is
  * the worst possible place to discover it.
  *
- * Only encode() and jitter() are needed here; the query-bounds and distance
- * halves stay client-side. If you change the encoding in either file, change it
+ * encode(), jitter() and distanceMi() are needed here (findSafeSpots ranks OSM
+ * venues by distance); the query-bounds half stays client-side. If you change the
+ * encoding in either file, change it
  * in both — a mismatch would put listings in geohash cells the client never
  * queries, and they'd simply never appear in distance search with no error
  * anywhere to explain why.
@@ -49,4 +50,18 @@ function jitter(lat, lng, radiusMi) {
   return { lat: lat + dLat, lng: lng + dLng };
 }
 
-module.exports = { encode, jitter };
+const EARTH_MI = 3958.8;
+function toRad(d) { return d * Math.PI / 180; }
+
+/* Great-circle distance in miles. Needed server-side by findSafeSpots, which
+ * ranks OSM venues by how close they are. Mirror of ../js/geo.js distanceMi. */
+function distanceMi(lat1, lng1, lat2, lng2) {
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return EARTH_MI * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+module.exports = { encode, jitter, distanceMi };
