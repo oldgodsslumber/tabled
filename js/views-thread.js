@@ -746,18 +746,149 @@ window.ThreadView = (function () {
     }).catch(function () { return null; });
   }
 
+  /* An address the seller chose to remember for safe-spot searches. Kept in
+   * THIS browser only -- never sent to the server, never on their profile. */
+  var SPOT_ADDR_KEY = 'tabled.safeSpotAddr';
+  function savedSpotAddr() {
+    try { return localStorage.getItem(SPOT_ADDR_KEY) || ''; } catch (e) { return ''; }
+  }
+  function setSavedSpotAddr(v) {
+    try { if (v) localStorage.setItem(SPOT_ADDR_KEY, v); else localStorage.removeItem(SPOT_ADDR_KEY); } catch (e) {}
+  }
+
+  /* The safe-spot picker. Defaults to searching around the seller's fuzzed ZIP
+   * point, but lets them give a precise location -- a typed address or the
+   * device's current position -- for THAT lookup only. The precise location is
+   * used to find nearby public places and then discarded: never stored on the
+   * profile or a listing, never shown to the other person. A typed address can
+   * optionally be remembered in this browser (only) for convenience. */
   function safeSpotDialog(req) {
-    var m = U.modal('Somewhere safe to meet', U.spinner('Finding public places'));
-    resolveMyPoint().then(function (pt) {
-      if (!pt) {
-        m.el.innerHTML = U.empty('Add your ZIP first',
-          'Your ZIP is what we search around. Add or re-save it in your profile, then try again.');
+    var m = U.modal('Somewhere safe to meet',
+      '<div id="ss-loc"></div><div id="ss-results">' + U.spinner('Finding public places') + '</div>');
+    var locBar = U.$('#ss-loc', m.el);
+    var results = U.$('#ss-results', m.el);
+
+    function searchAt(pt) {
+      results.innerHTML = U.spinner('Finding public places');
+      return Store.findSafeSpots(pt.lat, pt.lng).then(renderSpots).catch(function (err) {
+        results.innerHTML = U.empty('Could not look that up',
+          (err && err.message) || 'Try again in a moment.');
+      });
+    }
+
+    function renderSpots(spots) {
+      if (!spots.length) {
+        results.innerHTML = U.empty('Nothing found nearby',
+          'Try a specific address above, or pick a public place you both know — a busy ' +
+          'cafe or a police station exchange zone is the usual advice.');
         return;
       }
-      return findAndRenderSpots(m, req, pt);
-    }).catch(function (err) {
-      m.el.innerHTML = U.empty('Could not look that up',
-        (err && err.message) || 'Try again in a moment.');
+      var KIND = { police: 'Police exchange zone', cafe: 'Cafe', library: 'Library' };
+      results.innerHTML =
+        '<p class="modal-msg">Meeting in public is the single best safety step. ' +
+        'Police-station exchange zones are safest; a busy cafe is fine too.</p>' +
+        '<div class="event-list">' +
+          spots.map(function (sp) {
+            return '<button class="event-row" data-spot="' + U.attr(sp.name) + '">' +
+              '<div class="grow">' +
+                '<strong>' + U.esc(sp.name) + '</strong>' +
+                '<span class="fine">' + U.esc(KIND[sp.kind] || sp.kind) +
+                  ' · ' + U.esc(sp.distanceMi + ' mi') + '</span>' +
+              '</div></button>';
+          }).join('') +
+        '</div>' +
+        '<p class="bgg-attrib"><a href="https://www.openstreetmap.org/copyright" ' +
+          'target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a></p>';
+    }
+
+    function drawLoc(label, expanded) {
+      var addr = savedSpotAddr();
+      locBar.innerHTML =
+        '<div class="ss-locbar">' +
+          '<span class="fine">Searching near <strong>' + U.esc(label) + '</strong>.</span> ' +
+          '<button class="linkish" id="ss-toggle">' +
+            (expanded ? 'Hide' : 'Use a specific address') + '</button>' +
+        '</div>' +
+        (expanded
+          ? '<div class="ss-addr">' +
+              '<input id="ss-input" type="text" autocomplete="off" ' +
+                'placeholder="123 Main St, your town" value="' + U.attr(addr) + '">' +
+              '<div class="ss-addr-actions">' +
+                '<button class="btn small" id="ss-search">Search here</button>' +
+                (navigator.geolocation
+                  ? '<button class="btn ghost small" id="ss-gps">Use my location</button>' : '') +
+              '</div>' +
+              '<label class="ss-save"><input type="checkbox" id="ss-remember"' +
+                (addr ? ' checked' : '') + '> Remember this address on this device</label>' +
+              '<p class="fine">Only used to find nearby places right now — never saved to ' +
+                'your profile, shown to anyone, or attached to a listing.</p>' +
+            '</div>'
+          : '');
+      wireLoc(label, expanded);
+    }
+
+    function wireLoc(label, expanded) {
+      var tog = U.$('#ss-toggle', m.el);
+      if (tog) tog.addEventListener('click', function () { drawLoc(label, !expanded); });
+
+      var srch = U.$('#ss-search', m.el);
+      if (srch) srch.addEventListener('click', function () {
+        var v = U.$('#ss-input', m.el).value.trim();
+        if (!v) { U.toast('Enter an address', 'warn'); return; }
+        setSavedSpotAddr(U.$('#ss-remember', m.el).checked ? v : '');
+        results.innerHTML = U.spinner('Finding the address');
+        Store.geocodeArea(v).then(function (res) {
+          if (!res || typeof res.lat !== 'number') throw new Error('notfound');
+          drawLoc('that address', true);
+          return searchAt({ lat: res.lat, lng: res.lng });
+        }).catch(function (err) {
+          if (err && /out-of-range/.test(err.code || '')) {
+            results.innerHTML = U.empty('That address isn\'t in the US', err.message || '');
+          } else {
+            results.innerHTML = U.empty('Could not find that address',
+              'Check it and try again — a street and town is enough.');
+          }
+        });
+      });
+
+      var gps = U.$('#ss-gps', m.el);
+      if (gps) gps.addEventListener('click', function () {
+        results.innerHTML = U.spinner('Getting your location');
+        navigator.geolocation.getCurrentPosition(function (pos) {
+          drawLoc('your current location', true);
+          searchAt({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        }, function () {
+          results.innerHTML = U.empty('Location unavailable',
+            'Allow location access, or type an address instead.');
+        }, { enableHighAccuracy: true, timeout: 10000 });
+      });
+    }
+
+    /* Suggesting a spot posts it into the chat. Delegated on the modal so it
+     * keeps working after the results re-render. */
+    U.on(m.el, '[data-spot]', function (e, t) {
+      var name = t.dataset.spot;
+      m.close();
+      Store.sendMessage(req.id, 'Let\'s meet at ' + name + '?');
+      U.toast('Suggested ' + name + ' in the chat');
+    });
+
+    /* Open on the profile's fuzzed ZIP point; if there isn't one, start on the
+     * address form instead of a dead end. */
+    resolveMyPoint().then(function (pt) {
+      var me = Store.me();
+      if (!pt) {
+        drawLoc('nowhere yet', true);
+        results.innerHTML = U.empty('Pick a place to search around',
+          'Enter an address above, or use your current location.');
+        return;
+      }
+      drawLoc(me && me.generalArea ? ('ZIP ' + me.generalArea) : 'your area', false);
+      return searchAt(pt);
+    }).catch(function () {
+      drawLoc('your area', true);
+      results.innerHTML = U.empty('Pick a place to search around',
+        'Enter an address above, or use your current location.');
     });
   }
 

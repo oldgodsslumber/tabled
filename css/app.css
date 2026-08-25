@@ -1402,6 +1402,20 @@ select {
 .active-chips .chip.exc {
   background: var(--bad-bg); color: var(--bad); border-color: var(--bad);
 }
+
+/* ---- Safe-spot: precise-location controls -------------------------------- */
+.ss-locbar { margin-bottom: .6rem; }
+.ss-locbar .linkish { margin-left: .25rem; }
+.ss-addr {
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: var(--r); padding: .75rem; margin-bottom: .9rem;
+}
+.ss-addr input[type="text"] {
+  width: 100%; padding: .5rem .6rem; border: 1px solid var(--line);
+  border-radius: var(--r-sm); font: inherit; margin-bottom: .5rem;
+}
+.ss-addr-actions { display: flex; gap: .5rem; }
+.ss-save { display: flex; align-items: center; gap: .4rem; margin: .6rem 0 .2rem; font-size: .85rem; }
 .reason-chips { display: grid; gap: .45rem; }
 .reason-chips .chip { min-height: 48px; padding: .5rem .9rem; }
 .reason-other .field, .reason-other label { display: block; font-weight: 650; font-size: .85rem; margin-bottom: .3rem; }
