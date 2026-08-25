@@ -586,6 +586,15 @@ select {
 }
 .fine { font-size: .8rem; color: var(--muted); margin: .35rem 0 0; }
 .fine.pad { padding: .75rem; }
+/* Post-save confirmation of the resolved area. Reads as an answer, not as
+   more fine print, because it is the one field the user did not type. */
+.area-result {
+  color: var(--good);
+  background: var(--good-bg);
+  border-radius: .4rem;
+  padding: .5rem .65rem;
+  margin: .5rem 0 0;
+}
 .center { text-align: center; margin-top: 1rem; }
 
 .row2 { display: grid; grid-template-columns: 1fr; gap: .75rem; }

@@ -337,7 +337,15 @@ async function neighborhoodAt(lat, lng, key) {
   try {
     const res = await fetch(url);
     const body = await res.json();
-    if (body.status !== 'OK' || !body.results?.length) return null;
+    /* Status only -- never the coordinates, never the address. Without this the
+     * fallback is a black box: "Google has no neighborhood here" (ZERO_RESULTS)
+     * and "the request was wrong" (REQUEST_DENIED, INVALID_REQUEST) both surface
+     * as the same silently-coarser label. */
+    if (body.status !== 'OK') {
+      console.info('neighborhood reverse lookup:', body.status);
+      return null;
+    }
+    if (!body.results?.length) return null;
     /* Components only, never formatted_address: this response describes a point
      * derived from someone's street address, and the whole contract is that
      * nothing address-shaped leaves this function. */

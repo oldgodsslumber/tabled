@@ -377,6 +377,11 @@ window.ProfileView = (function () {
             U.esc(CFG.GEO.label) + ' only right now.</span>' +
         '</label>' +
 
+        /* Filled in after a save. The resolved area is the one thing on this
+         * form the user did not type, so it is the one thing they cannot
+         * verify by looking at what they entered -- it has to be shown back. */
+        '<p class="fine area-result" id="s-area-out" hidden></p>' +
+
         '<div class="form-actions">' +
           '<a class="btn ghost" href="#/me">Cancel</a>' +
           '<button class="btn" id="s-save">Save</button>' +
@@ -455,8 +460,31 @@ window.ProfileView = (function () {
 
       resolve.then(function () { return Store.saveProfile(patch); })
         .then(function () {
-          U.toast('Profile saved');
-          App.go('me', {});
+          /* Deliberately does NOT navigate away. The area the user typed is not
+           * the area that gets stored -- an address becomes a neighborhood, a
+           * ZIP becomes a town -- so bouncing to the profile hides the single
+           * most surprising result of the save behind a page change. Stay put,
+           * put the resolved label in the field, and say what it became. */
+          var saved = (patch.generalArea !== undefined) ? patch.generalArea : (me.generalArea || '');
+
+          /* Keep the in-memory profile in step, or the "did the text change?"
+           * check above would re-geocode an area that is already resolved. */
+          me = Store.me() || me;
+
+          var input = U.$('#s-area');
+          if (input) input.value = saved;
+
+          var out = U.$('#s-area-out');
+          if (out) {
+            out.hidden = false;
+            out.textContent = saved
+              ? 'Saved. Your area is shown to other people as “' + saved + '”.'
+              : 'Saved. You have no area set, so distance search is off.';
+          }
+
+          U.toast(saved ? 'Saved — your area is ' + saved : 'Profile saved');
+          btn.disabled = false;
+          btn.textContent = 'Save';
         })
         .catch(function (err) {
           if (isAreaProblem(err)) {
@@ -765,7 +793,13 @@ window.ProfileView = (function () {
         Object.assign(patch, fields);
         return Store.saveProfile(patch);
       }).then(function () {
-        U.toast('You\'re all set');
+        /* Names the resolved area here too. Onboarding DOES go on to the feed --
+         * holding a new account on the setup screen is the thing this screen
+         * exists to end -- so this toast is the only chance to show what the
+         * address became. */
+        U.toast(patch.generalArea
+          ? 'You\'re all set — you\'re in ' + patch.generalArea
+          : 'You\'re all set');
         App.go('feed', {});
       }).catch(function (err) {
         if (isAreaProblem(err)) {
