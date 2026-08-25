@@ -86,16 +86,17 @@ window.Store = (function () {
       var name = e.name || (g && g.name) || 'Untitled game';
       names.push(name);
       if (e.bggId) bggIds.push(String(e.bggId));
-      /* Prefer the entry's own categories -- the seller seeds them from the
-       * game data and can then fix or add to them, so their edits must win.
-       * Fall back to the raw game categories only when the entry has none yet
-       * (e.g. saved before details finished loading). Normalized either way so
-       * every stored category is a real taxonomy value that a filter matches. */
+      /* Categories (themes) and mechanics (how it plays) are stored SEPARATELY
+       * and VERBATIM -- BGG's terms forbid modifying their data, and buyers
+       * filter the two on their own. Prefer the seller's edited sets; fall back
+       * to the raw game data when the entry has none yet (saved before details
+       * loaded). */
       var entryCats = (e.categories && e.categories.length)
-        ? e.categories
-        : (g ? (g.categories || []) : []);
-      cats = cats.concat(CFG.normalizeCategories(entryCats));
-      if (g) mechs = mechs.concat(g.mechanics || []);
+        ? e.categories : (g ? (g.categories || []) : []);
+      cats = cats.concat(entryCats);
+      var entryMechs = (e.mechanics && e.mechanics.length)
+        ? e.mechanics : (g ? (g.mechanics || []) : []);
+      mechs = mechs.concat(entryMechs);
       if (e.condition) conds.push(e.condition);
       tags = tags.concat(e.tags || []);
 
@@ -175,6 +176,7 @@ window.Store = (function () {
 
         if (term && (l.searchTokens || []).indexOf(term) === -1) return false;
         if (f.category && (l.categories || []).indexOf(f.category) === -1) return false;
+        if (f.mechanic && (l.mechanics || []).indexOf(f.mechanic) === -1) return false;
         if (f.condition && (l.conditions || []).indexOf(f.condition) === -1) return false;
 
         /* Tags are AND, not OR — someone filtering for "sleeved + insert" wants

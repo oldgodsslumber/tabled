@@ -115,6 +115,7 @@ window.Feed = (function () {
       q: p.q || '',
       sort: p.sort || 'new',
       category: p.category || '',
+      mechanic: p.mechanic || '',
       condition: p.condition || '',
       fulfillment: p.fulfillment || '',
       payment: p.payment || '',
@@ -135,7 +136,7 @@ window.Feed = (function () {
 
   function activeCount(p) {
     var n = 0;
-    ['category', 'condition', 'fulfillment', 'radius', 'payment']
+    ['category', 'mechanic', 'condition', 'fulfillment', 'radius', 'payment']
       .forEach(function (k) { if (p[k]) n++; });
     if (p.tags) n += String(p.tags).split(',').filter(Boolean).length;
     return n;
@@ -237,6 +238,7 @@ window.Feed = (function () {
     if (p.eventId) chips.push({ k: 'eventId', t: 'At this event' });
     if (p.radius) chips.push({ k: 'radius', t: 'Within ' + p.radius + ' mi' });
     if (p.category) chips.push({ k: 'category', t: p.category });
+    if (p.mechanic) chips.push({ k: 'mechanic', t: p.mechanic });
     if (p.condition) chips.push({ k: 'condition', t: CFG.condition(p.condition).label });
     if (p.fulfillment) {
       var ful = CFG.FULFILLMENT.filter(function (f) { return f.key === p.fulfillment; })[0];
@@ -281,7 +283,7 @@ window.Feed = (function () {
       var k = t.dataset.drop;
       var next = Object.assign({}, state);
       if (k === '*') {
-        ['radius', 'category', 'condition', 'fulfillment', 'tags', 'eventId', 'payment']
+        ['radius', 'category', 'mechanic', 'condition', 'fulfillment', 'tags', 'eventId', 'payment']
           .forEach(function (f) { delete next[f]; });
       } else if (k.indexOf('tag:') === 0) {
         var drop = k.slice(4);
@@ -388,7 +390,19 @@ window.Feed = (function () {
               U.esc(c) + '</option>';
           }).join('') +
         '</select>' +
-        '<p class="fine">Categories come from BoardGameGeek, so manually-entered games won\'t match one.</p>' +
+        '<p class="fine">Themes from BoardGameGeek — what the game is about.</p>' +
+      '</div>' +
+
+      '<div class="filter-group">' +
+        '<h4>Mechanic</h4>' +
+        '<select data-f="mechanic">' +
+          '<option value="">Any mechanic</option>' +
+          CFG.MECHANICS.map(function (c) {
+            return '<option value="' + U.attr(c) + '"' + (p.mechanic === c ? ' selected' : '') + '>' +
+              U.esc(c) + '</option>';
+          }).join('') +
+        '</select>' +
+        '<p class="fine">How the game plays — worker placement, tile laying, deck building…</p>' +
       '</div>' +
 
       '<div class="filter-group">' +
@@ -455,6 +469,8 @@ window.Feed = (function () {
 
     var sel = U.$('select[data-f="category"]', m.el);
     sel.addEventListener('change', function () { draft.category = sel.value || undefined; });
+    var selM = U.$('select[data-f="mechanic"]', m.el);
+    if (selM) selM.addEventListener('change', function () { draft.mechanic = selM.value || undefined; });
 
     U.on(m.el, '[data-tag]', function (e, t) {
       var tag = t.dataset.tag;
@@ -467,7 +483,7 @@ window.Feed = (function () {
       if (t.dataset.act === 'reset') {
         m.close();
         var cleared = Object.assign({}, state);
-        ['radius', 'category', 'condition', 'fulfillment', 'tags', 'payment']
+        ['radius', 'category', 'mechanic', 'condition', 'fulfillment', 'tags', 'payment']
           .forEach(function (k) { delete cleared[k]; });
         App.go('feed', cleared);
         return;

@@ -21,7 +21,7 @@ window.CreateView = (function () {
   function blankEntry(seed) {
     return Object.assign({
       id: null, bggId: null, name: '', condition: 'VG',
-      categories: [], contents: [], tags: [], photos: [], askingPrice: null, notes: ''
+      categories: [], mechanics: [], contents: [], tags: [], photos: [], askingPrice: null, notes: ''
     }, seed || {});
   }
 
@@ -187,13 +187,21 @@ window.CreateView = (function () {
    * onto our taxonomy), and the seller can fix or add to them here; that's the
    * cure for "the categories are all wrong". Without categories a listing never
    * matches a category filter, so this is worth surfacing on every entry. */
-  function categoryHtml(e, i) {
-    var chosen = e.categories || [];
+  /* One picker, used for BGG's two SEPARATE vocabularies: categories (themes)
+   * and mechanics (how it plays). A searched game seeds both verbatim from BGG;
+   * the seller edits from there. Kept separate because buyers filter on them
+   * separately. */
+  function pickerHtml(e, kind) {
+    var isMech = kind === 'mech';
+    var chosen = (isMech ? e.mechanics : e.categories) || [];
+    var opts = isMech ? CFG.MECHANICS : CFG.CATEGORIES;
+    var addClass = isMech ? 'e-mech-add' : 'e-cat-add';
+    var rmAttr = isMech ? 'data-rmmech' : 'data-rmcat';
     return '<div class="field">' +
-      '<span>Categories <em>optional</em></span>' +
-      '<select class="e-cat-add">' +
-        '<option value="">Add a category…</option>' +
-        CFG.CATEGORIES.filter(function (c) { return chosen.indexOf(c) === -1; })
+      '<span>' + (isMech ? 'Mechanics' : 'Categories') + ' <em>optional</em></span>' +
+      '<select class="' + addClass + '">' +
+        '<option value="">' + (isMech ? 'Add a mechanic…' : 'Add a category…') + '</option>' +
+        opts.filter(function (c) { return chosen.indexOf(c) === -1; })
           .map(function (c) {
             return '<option value="' + U.attr(c) + '">' + U.esc(c) + '</option>';
           }).join('') +
@@ -201,13 +209,14 @@ window.CreateView = (function () {
       (chosen.length
         ? '<div class="chip-row tight" style="margin-top:.4rem">' +
             chosen.map(function (c) {
-              return '<button class="chip on" data-rmcat="' + U.attr(c) + '">' +
+              return '<button class="chip on" ' + rmAttr + '="' + U.attr(c) + '">' +
                 U.esc(c) + ' <span class="x">&times;</span></button>';
             }).join('') +
           '</div>'
         : '') +
-      '<span class="fine">Without these, this listing won\'t show up when someone ' +
-        'filters by category.</span>' +
+      (isMech
+        ? ''
+        : '<span class="fine">Categories and mechanics are how buyers filter — worth adding.</span>') +
     '</div>';
   }
 
@@ -381,7 +390,8 @@ window.CreateView = (function () {
 
       lotHtml(e, i) +
 
-      categoryHtml(e, i) +
+      pickerHtml(e, 'cat') +
+      pickerHtml(e, 'mech') +
 
       '<div class="field">' +
         '<span>Tags</span>' +
@@ -630,8 +640,16 @@ window.CreateView = (function () {
         if (hint) hint.textContent = CFG.condition(entry.condition).blurb;
       } else if (e.target.classList.contains('e-cat-add')) {
         var cat = e.target.value;
+        entry.categories = entry.categories || [];
         if (cat && entry.categories.indexOf(cat) === -1) {
           entry.categories.push(cat);
+          drawEntries();
+        }
+      } else if (e.target.classList.contains('e-mech-add')) {
+        var mech = e.target.value;
+        entry.mechanics = entry.mechanics || [];
+        if (mech && entry.mechanics.indexOf(mech) === -1) {
+          entry.mechanics.push(mech);
           drawEntries();
         }
       } else if (e.target.classList.contains('e-photo')) {
@@ -665,6 +683,13 @@ window.CreateView = (function () {
       var entry = draft.entries[Number(block.dataset.i)];
       var i = entry.categories.indexOf(t.dataset.rmcat);
       if (i !== -1) { entry.categories.splice(i, 1); drawEntries(); }
+    });
+
+    U.on(host, '[data-rmmech]', function (e, t) {
+      var block = t.closest('.entry-edit');
+      var entry = draft.entries[Number(block.dataset.i)];
+      var i = (entry.mechanics || []).indexOf(t.dataset.rmmech);
+      if (i !== -1) { entry.mechanics.splice(i, 1); drawEntries(); }
     });
 
     U.on(host, '[data-remove]', function (e, t) {
@@ -753,12 +778,14 @@ window.CreateView = (function () {
       draft.entries.forEach(function (e) {
         if (String(e.bggId) !== String(bggId)) return;
         if (!e.name) e.name = game.name;
-        /* Seed the category chips from the game's data (already normalized to
-         * our taxonomy) so the seller starts from something real and edits from
-         * there. Only seed an empty set -- never clobber a seller's own edits
-         * on a later redraw. */
+        /* Seed categories and mechanics VERBATIM from BGG (their terms forbid
+         * modifying the data, and buyers filter the two separately). Only seed
+         * an empty set -- never clobber the seller's own edits on a redraw. */
         if (!(e.categories && e.categories.length) && game.categories && game.categories.length) {
-          e.categories = CFG.normalizeCategories(game.categories);
+          e.categories = game.categories.slice();
+        }
+        if (!(e.mechanics && e.mechanics.length) && game.mechanics && game.mechanics.length) {
+          e.mechanics = game.mechanics.slice();
         }
       });
       drawEntries();
