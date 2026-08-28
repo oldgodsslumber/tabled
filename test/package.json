@@ -1,0 +1,12 @@
+{
+  "name": "tabled-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Multi-user trade end-to-end suite. Runs against the Firebase Emulator Suite only — never a real project. See README.md in this folder.",
+  "scripts": {
+    "trade": "node trade-e2e.mjs"
+  },
+  "dependencies": {
+    "firebase": "^10.12.2"
+  }
+}

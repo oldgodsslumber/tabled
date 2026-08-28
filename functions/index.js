@@ -29,6 +29,21 @@ const { onDocumentCreated, onDocumentUpdated, onDocumentDeleted } = require('fir
 const { defineSecret } = require('firebase-functions/params');
 const { setGlobalOptions } = require('firebase-functions/v2');
 const admin = require('firebase-admin');
+/* Timestamp and FieldValue come from the modular entrypoint rather than off
+ * `admin.firestore.*`, and that is load-bearing for local testing.
+ *
+ * The Functions emulator stubs `firebase-admin` behind a Proxy, and its
+ * getOriginal() returns `value.bind(target)` for `admin.firestore`. bind()
+ * drops a function's static properties, so `Timestamp` and
+ * `FieldValue` are BOTH undefined inside the emulator runtime —
+ * every callable that stamps a time dies with "Cannot read properties of
+ * undefined (reading 'fromMillis')". Production is unaffected (it does not go
+ * through that proxy), which is exactly why it went unnoticed: the code works
+ * live and cannot be run locally at all.
+ *
+ * These bindings are the same classes `admin.firestore.*` exposes, so runtime
+ * behaviour is identical either way. */
+const { Timestamp, FieldValue } = require('firebase-admin/firestore');
 const { XMLParser } = require('fast-xml-parser');
 const Geo = require('./geo');
 
@@ -243,7 +258,7 @@ exports.getGameDetails = onCall({ secrets: [BGG_TOKEN], maxInstances: 1 }, async
     mechanics: linksOfType(item, 'boardgamemechanic'),
     suggestedPrice: medianUsdPrice(item),
     source: 'bgg-api',
-    lastSyncedAt: admin.firestore.FieldValue.serverTimestamp()
+    lastSyncedAt: FieldValue.serverTimestamp()
   };
 
   /* merge:true so a refresh that comes back without marketplace data (BGG
@@ -483,7 +498,7 @@ exports.bumpListingCounter = onCall(async (req) => {
    * this for its own listings; this is the half that can't be bypassed. */
   if (snap.data().sellerId === req.auth.uid) return { skipped: true };
 
-  await ref.update({ [field]: admin.firestore.FieldValue.increment(1) });
+  await ref.update({ [field]: FieldValue.increment(1) });
   return { ok: true };
 });
 
@@ -638,11 +653,11 @@ function holdDeadlineFor(listing, nowMs) {
 
   if (!startMs || !endMs) return holdDeadline(nowMs);          /* ordinary listing */
   if (nowMs < startMs) return null;                            /* con hasn't started */
-  if (nowMs > endMs) return admin.firestore.Timestamp.fromMillis(nowMs);  /* over */
+  if (nowMs > endMs) return Timestamp.fromMillis(nowMs);  /* over */
 
   /* Live: compressed, but never past the end of the event itself. */
   const compressed = nowMs + EVENT_HOLD_HOURS * 3600000;
-  return admin.firestore.Timestamp.fromMillis(Math.min(compressed, endMs));
+  return Timestamp.fromMillis(Math.min(compressed, endMs));
 }
 
 /* The statuses that occupy a place in the queue. Anything else (completed,
@@ -650,7 +665,7 @@ function holdDeadlineFor(listing, nowMs) {
 const OPEN_STATUSES = ['queued', 'onHold', 'proposedTime', 'scheduled'];
 
 function holdDeadline(fromMs) {
-  return admin.firestore.Timestamp.fromMillis(fromMs + HOLD_HOURS * 3600000);
+  return Timestamp.fromMillis(fromMs + HOLD_HOURS * 3600000);
 }
 
 /* Recompute a game entry's queue from the requests that actually exist.
@@ -712,10 +727,10 @@ async function resyncQueue(tx, listingId, gameEntryId, nowMs) {
        * someone else's. They've only just been told it's their turn. */
       patch.status = 'onHold';
       patch.holdExpiresAt = holdDeadlineFor(listing, nowMs);
-      patch.promotedAt = admin.firestore.Timestamp.fromMillis(nowMs);
+      patch.promotedAt = Timestamp.fromMillis(nowMs);
     }
     if (Object.keys(patch).length) {
-      patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+      patch.updatedAt = FieldValue.serverTimestamp();
       tx.update(doc.ref, patch);
     }
   });
@@ -894,7 +909,7 @@ exports.createRequest = onCall(async (req) => {
        * For an event listing this may legitimately be null — a hold placed
        * before the con starts does not tick. */
       holdExpiresAt: position === 0 ? holdDeadlineFor(listing, nowMs) : null,
-      promotedAt: position === 0 ? admin.firestore.Timestamp.fromMillis(nowMs) : null,
+      promotedAt: position === 0 ? Timestamp.fromMillis(nowMs) : null,
       /* Denormalized so the expiry sweep can find requests whose event has
        * ended. Firestore cannot join, and a sweep that had to read the parent
        * listing for every open request would be one read per request per run. */
@@ -920,8 +935,8 @@ exports.createRequest = onCall(async (req) => {
       lastMessageSenderId: null,
       lastReadBuyerAt: null,
       lastReadSellerAt: null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
     });
 
     tx.update(entryRef, {
@@ -948,7 +963,7 @@ exports.createRequest = onCall(async (req) => {
     }
 
     tx.update(listingRef, {
-      requestCount: admin.firestore.FieldValue.increment(1)
+      requestCount: FieldValue.increment(1)
     });
 
     return { requestId: newRef.id, queuePosition: position, existing: false };
@@ -1012,7 +1027,7 @@ exports.onRequestStatusChange = onDocumentUpdated('requests/{requestId}', async 
  * completion, after a GRACE_HOURS cushion.
  */
 exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
-  const now = admin.firestore.Timestamp.now();
+  const now = Timestamp.now();
   const nowMs = now.toMillis();
   const touched = new Map();   /* key -> {listingId, gameEntryId} */
   let expired = 0, reverted = 0, noShows = 0;
@@ -1031,7 +1046,7 @@ exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
   for (const doc of lapsed.docs) {
     await doc.ref.update({
       status: 'expired',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      updatedAt: FieldValue.serverTimestamp()
     });
     remember(doc.data());
     expired++;
@@ -1049,7 +1064,7 @@ exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
       proposedTime: null,
       proposedBy: null,
       holdExpiresAt: holdDeadline(nowMs),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      updatedAt: FieldValue.serverTimestamp()
     });
     reverted++;
   }
@@ -1068,7 +1083,7 @@ exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
     await doc.ref.update({
       status: 'expired',
       closedReason: 'eventEnded',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      updatedAt: FieldValue.serverTimestamp()
     });
     remember(doc.data());
     eventClosed++;
@@ -1078,8 +1093,8 @@ exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
    * Event listings use a much shorter cushion — an hour, not twelve — because
    * a con is only a few days long and the next person in line needs their
    * turn while the event is still running. */
-  const graceCutoff = admin.firestore.Timestamp.fromMillis(nowMs - GRACE_HOURS * 3600000);
-  const eventGraceCutoff = admin.firestore.Timestamp.fromMillis(nowMs - EVENT_GRACE_HOURS * 3600000);
+  const graceCutoff = Timestamp.fromMillis(nowMs - GRACE_HOURS * 3600000);
+  const eventGraceCutoff = Timestamp.fromMillis(nowMs - EVENT_GRACE_HOURS * 3600000);
   const missed = await db.collection('requests')
     .where('status', '==', 'scheduled')
     .where('scheduledTime', '<=', eventGraceCutoff)
@@ -1097,7 +1112,7 @@ exports.advanceExpiredHolds = onSchedule('every 30 minutes', async () => {
     await doc.ref.update({
       status: 'expired',
       closedReason: 'noShow',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      updatedAt: FieldValue.serverTimestamp()
     });
     remember(d);
     noShows++;
@@ -1219,12 +1234,12 @@ exports.bookSlot = onCall(async (req) => {
       date,
       startTime,
       endTime: TimeSlots.toHHMM(TimeSlots.toMinutes(startTime) + slotMinutes),
-      startsAt: admin.firestore.Timestamp.fromMillis(startsAtMs),
+      startsAt: Timestamp.fromMillis(startsAtMs),
       requestId,
       gameEntryId: request.gameEntryId,
       listingId: request.listingId,
       buyerId: uid,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
+      createdAt: FieldValue.serverTimestamp()
     });
   } catch (err) {
     /* ALREADY_EXISTS is the whole exclusivity mechanism firing, not a bug. It
@@ -1246,14 +1261,14 @@ exports.bookSlot = onCall(async (req) => {
    * identical, and the seller still gets the final Confirm/Decline. */
   await requestRef.update({
     status: 'proposedTime',
-    proposedTime: admin.firestore.Timestamp.fromMillis(startsAtMs),
+    proposedTime: Timestamp.fromMillis(startsAtMs),
     proposedBy: uid,
     method: 'pickup',
     bookedSlotId: slotDocId,
     /* The seller's response window. If they never answer, advanceExpiredHolds
      * reverts this to onHold and releases the slot. */
     holdExpiresAt: holdDeadline(Date.now()),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: FieldValue.serverTimestamp()
   });
 
   return { slotId: slotDocId, startsAtMs, requestId };
@@ -1334,8 +1349,8 @@ exports.confirmSold = onCall(async (req) => {
     const bothNow = !!r[otherField];
 
     const patch = {};
-    patch[field] = admin.firestore.Timestamp.fromMillis(nowMs);
-    patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+    patch[field] = Timestamp.fromMillis(nowMs);
+    patch.updatedAt = FieldValue.serverTimestamp();
 
     if (!bothNow) {
       tx.update(requestRef, patch);
@@ -1344,8 +1359,22 @@ exports.confirmSold = onCall(async (req) => {
 
     /* ---- Both sides are in. Everything below happens atomically. ---- */
 
+    /* This read has to come before the first write. Firestore transactions
+     * reject any get() issued after a set/update, and this query used to sit
+     * further down, next to the loop it feeds. The result was that completion
+     * threw "Firestore transactions require all reads to be executed before all
+     * writes" on every trade that actually reached its second confirmation --
+     * so no trade could ever complete, which is why the live app has never had
+     * one through it. The single-confirmation path never hit it, because that
+     * branch returns before reaching this code. */
+    const queued = await tx.get(
+      db.collection('requests')
+        .where('gameEntryId', '==', r.gameEntryId)
+        .where('status', 'in', OPEN_STATUSES)
+    );
+
     patch.status = 'completed';
-    patch.completedAt = admin.firestore.Timestamp.fromMillis(nowMs);
+    patch.completedAt = Timestamp.fromMillis(nowMs);
 
     /* Tabled is free — there is no verification fee. Completion is the whole
      * event: it counts the trade for both people and unlocks reviews, and
@@ -1378,19 +1407,15 @@ exports.confirmSold = onCall(async (req) => {
 
     /* Anyone still queued behind this trade is waiting for something that no
      * longer exists. Closing them explicitly is kinder than leaving them to
-     * find out when their hold silently lapses. */
-    const queued = await tx.get(
-      db.collection('requests')
-        .where('gameEntryId', '==', r.gameEntryId)
-        .where('status', 'in', OPEN_STATUSES)
-    );
+     * find out when their hold silently lapses. (Read above, with the other
+     * reads; only the writes belong here.) */
     let closed = 0;
     queued.docs.forEach((doc) => {
       if (doc.id === requestId) return;
       tx.update(doc.ref, {
         status: 'expired',
         closedReason: 'itemSold',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        updatedAt: FieldValue.serverTimestamp()
       });
       closed++;
     });
@@ -1399,9 +1424,9 @@ exports.confirmSold = onCall(async (req) => {
      * turned up and did the thing. Written here because these fields are
      * function-only in the rules for exactly this reason. */
     tx.update(db.collection('users').doc(r.buyerId),
-      { tradeCount: admin.firestore.FieldValue.increment(1) });
+      { tradeCount: FieldValue.increment(1) });
     tx.update(db.collection('users').doc(r.sellerId),
-      { tradeCount: admin.firestore.FieldValue.increment(1) });
+      { tradeCount: FieldValue.increment(1) });
 
     return {
       already: false, completed: true, closedOthers: closed,
@@ -1433,7 +1458,7 @@ async function archiveIfAllSold(listingId) {
   if (!entries.docs.every((d) => d.data().status === 'sold')) return;
   await db.collection('listings').doc(listingId).update({
     status: 'archived',
-    archivedAt: admin.firestore.FieldValue.serverTimestamp()
+    archivedAt: FieldValue.serverTimestamp()
   });
   console.log('listing ' + listingId + ' archived - every game sold');
 }
@@ -1540,7 +1565,7 @@ async function resolveOpenReports(targetType, targetId, actorUid) {
     batch.update(doc.ref, {
       status: 'reviewed',
       reviewedBy: actorUid,
-      reviewedAt: admin.firestore.FieldValue.serverTimestamp()
+      reviewedAt: FieldValue.serverTimestamp()
     });
   });
   await batch.commit();
@@ -1549,7 +1574,7 @@ async function resolveOpenReports(targetType, targetId, actorUid) {
 
 async function writeAudit(entry) {
   await db.collection('adminActions').add(Object.assign({
-    createdAt: admin.firestore.FieldValue.serverTimestamp()
+    createdAt: FieldValue.serverTimestamp()
   }, entry));
 }
 
@@ -1635,13 +1660,13 @@ exports.adminAction = onCall(async (req) => {
       /* null means forever. A date means comped-until. */
       const untilMs = Number(d.until);
       const vipUntil = Number.isFinite(untilMs) && untilMs > Date.now()
-        ? admin.firestore.Timestamp.fromMillis(untilMs)
+        ? Timestamp.fromMillis(untilMs)
         : null;
 
       await db.collection('users').doc(targetId).update({
         vip: true,
         vipUntil,
-        vipGrantedAt: admin.firestore.FieldValue.serverTimestamp(),
+        vipGrantedAt: FieldValue.serverTimestamp(),
         vipGrantedBy: uid,
         vipReason: reason
       });
@@ -1853,10 +1878,10 @@ exports.releaseMeetingAddress = onCall({ secrets: [ADDRESS_KEY] }, async (req) =
     senderId: uid,
     recipientId,
     ciphertext: encryptAddress(address),
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
     /* Firestore TTL policy deletes on this field — the backstop that fires
      * even if pickup is never confirmed and no function ever runs. */
-    expireAt: admin.firestore.Timestamp.fromMillis(expireAtMs)
+    expireAt: Timestamp.fromMillis(expireAtMs)
   });
 
   /* A pointer on the request so both clients can see an address is waiting,
@@ -1864,7 +1889,7 @@ exports.releaseMeetingAddress = onCall({ secrets: [ADDRESS_KEY] }, async (req) =
   await reqSnap.ref.update({
     meetingAddressPending: true,
     meetingAddressFor: recipientId,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: FieldValue.serverTimestamp()
   });
 
   return { ok: true, expireAtMs };
@@ -1918,7 +1943,7 @@ exports.confirmPickup = onCall(async (req) => {
   await reqSnap.ref.update({
     meetingAddressPending: false,
     meetingAddressFor: null,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: FieldValue.serverTimestamp()
   });
 
   return { ok: true };
@@ -1935,7 +1960,7 @@ exports.confirmPickup = onCall(async (req) => {
  * "kept forever in a different drawer".
  */
 exports.archiveClosedThreads = onSchedule('every 6 hours', async () => {
-  const cutoff = admin.firestore.Timestamp.fromMillis(
+  const cutoff = Timestamp.fromMillis(
     Date.now() - ARCHIVE_DAYS * 86400000);
 
   /* Closed, past the cutoff, not already archived. */
@@ -1969,9 +1994,9 @@ exports.archiveClosedThreads = onSchedule('every 6 hours', async () => {
             createdAt: x.createdAt || null
           };
         }),
-        archivedAt: admin.firestore.FieldValue.serverTimestamp(),
+        archivedAt: FieldValue.serverTimestamp(),
         /* The archive expires too. Firestore TTL deletes on this field. */
-        expireAt: admin.firestore.Timestamp.fromMillis(Date.now() + ARCHIVE_DAYS * 86400000)
+        expireAt: Timestamp.fromMillis(Date.now() + ARCHIVE_DAYS * 86400000)
       });
 
       /* Delete the live messages in batches. */
@@ -2068,9 +2093,9 @@ exports.findSafeSpots = onCall(async (req) => {
 
   await cacheRef.set({
     spots,
-    fetchedAt: admin.firestore.FieldValue.serverTimestamp(),
+    fetchedAt: FieldValue.serverTimestamp(),
     /* OSM data is refreshable; let the cache self-expire so stale venues age out. */
-    expireAt: admin.firestore.Timestamp.fromMillis(Date.now() + 60 * 86400000)
+    expireAt: Timestamp.fromMillis(Date.now() + 60 * 86400000)
   });
 
   return { spots, cached: false };
@@ -2095,7 +2120,7 @@ exports.onWatchCreate = onDocumentCreated('users/{uid}/watches/{listingId}', asy
   const listingId = event.params.listingId;
   try {
     await db.collection('listings').doc(listingId)
-      .update({ watchCount: admin.firestore.FieldValue.increment(1) });
+      .update({ watchCount: FieldValue.increment(1) });
   } catch (e) {
     /* The listing may have been deleted between save and trigger — nothing to
      * count, and the orphan watch doc is harmless. */
@@ -2107,7 +2132,7 @@ exports.onWatchDelete = onDocumentDeleted('users/{uid}/watches/{listingId}', asy
   const listingId = event.params.listingId;
   try {
     await db.collection('listings').doc(listingId)
-      .update({ watchCount: admin.firestore.FieldValue.increment(-1) });
+      .update({ watchCount: FieldValue.increment(-1) });
   } catch (e) {
     console.warn('onWatchDelete: could not decrement', listingId, e.message);
   }
