@@ -997,13 +997,29 @@ exports.onRequestStatusChange = onDocumentUpdated('requests/{requestId}', async 
    * releasing it to `active` there would put a traded-away game back on the
    * market. */
   if (wasOpen && !isOpen && after.offeredGameEntryId && after.status !== 'completed') {
+    /* Clearing the reservation must not decide the entry's status on its own.
+     * This used to write `status: 'active'` unconditionally, which clobbered a
+     * live hold: reserving a game for a trade proposal does not evict whoever
+     * was already queued on it, so releasing the reservation left the entry
+     * claiming to be available while still carrying currentHoldRequestId and a
+     * non-zero queueCount -- available and held at the same time.
+     *
+     * resyncQueue already owns deriving an entry's state from the requests that
+     * actually exist against it (including leaving a `sold` entry sold), so the
+     * release hands the question to it rather than answering it twice. */
     const offeredRef = db.collection('listings').doc(after.offeredListingId)
       .collection('gameEntries').doc(after.offeredGameEntryId);
-    await offeredRef.update({
-      status: 'active',
-      reservedByRequestId: null
-    }).catch((e) => console.warn('could not release reserved entry', e));
-    console.log(`released reserved entry ${after.offeredGameEntryId} (${after.status})`);
+    try {
+      await db.runTransaction(async (tx) => {
+        const snap = await tx.get(offeredRef);
+        if (!snap.exists) return;
+        await resyncQueue(tx, after.offeredListingId, after.offeredGameEntryId, nowMs);
+        tx.update(offeredRef, { reservedByRequestId: null });
+      });
+      console.log(`released reserved entry ${after.offeredGameEntryId} (${after.status})`);
+    } catch (e) {
+      console.warn('could not release reserved entry', e);
+    }
   }
 
   if (wasOpen && !isOpen) {
@@ -1158,15 +1174,58 @@ const TimeSlots = require('./timeslots');
  * for any reason releases the slot. */
 const SLOT_HOLDING_STATUSES = ['proposedTime', 'scheduled'];
 
+/* Is this a real calendar date, spelled the one canonical way?
+ *
+ * The shape regex alone is not enough, and the gap is exploitable. Slot
+ * exclusivity is a deterministic document id built by string concatenation
+ * (TimeSlots.slotId), so it only works if the same instant always produces the
+ * same string. Date.UTC silently normalises overflow -- Date.UTC(2026, 7, 33)
+ * IS 2026-09-02 -- so "2026-08-33" and "2026-09-02" resolve to one instant but
+ * two different ids, and the primary-key lock never engages. Two buyers could
+ * hold the same half hour with the same seller.
+ *
+ * Round-tripping the components back out is what rejects a spelling that only
+ * looks like the date it resolves to. */
+function isCanonicalDate(s) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  return probe.getUTCFullYear() === y &&
+         probe.getUTCMonth() === m - 1 &&
+         probe.getUTCDate() === d;
+}
+
+/* A real time of day, ON the booking grid.
+ *
+ * The other half of the same problem. Everything about scheduling assumes
+ * SLOT_MINUTES increments -- generateSlots steps by them, endTime is start plus
+ * them -- but nothing validated it, and withinWindows only asks whether the
+ * slot fits inside the window. So 14:15 was bookable against an existing 14:00,
+ * producing a different id for an overlapping half hour and committing the
+ * seller to two buyers at once. The regex also let 99:99 through. */
+function isGridTime(s) {
+  if (!/^\d{2}:\d{2}$/.test(s)) return false;
+  const [hh, mm] = s.split(':').map(Number);
+  if (hh > 23 || mm > 59) return false;
+  return (hh * 60 + mm) % TimeSlots.SLOT_MINUTES === 0;
+}
+
 exports.bookSlot = onCall(async (req) => {
   requireAuth(req);
   const uid = req.auth.uid;
   const d = req.data || {};
-  const requestId = String(d.requestId || '');
-  const date = String(d.date || '');
-  const startTime = String(d.startTime || '');
+  /* String() on a hostile object can throw (a non-callable toString), which
+   * would surface as an opaque `internal` instead of a clean rejection. */
+  let requestId, date, startTime;
+  try {
+    requestId = String(d.requestId || '');
+    date = String(d.date || '');
+    startTime = String(d.startTime || '');
+  } catch (e) {
+    throw new HttpsError('invalid-argument', 'requestId, date and startTime must be strings');
+  }
 
-  if (!requestId || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(startTime)) {
+  if (!requestId || !isCanonicalDate(date) || !isGridTime(startTime)) {
     throw new HttpsError('invalid-argument', 'requestId, date and startTime are required');
   }
 
@@ -1195,6 +1254,21 @@ exports.bookSlot = onCall(async (req) => {
 
   if (!windows.length || !tz) {
     throw new HttpsError('failed-precondition', "This seller hasn't set any availability");
+  }
+
+  /* The game still has to be for sale. The rules now stop a closed request
+   * being written back to `onHold`, which was the route to this, but booking a
+   * meeting for an item that has already sold is nonsense on its own terms and
+   * this callable should not depend on a rules clause elsewhere to prevent it.
+   * Cheap: one document read on a path already established above. */
+  /* `sold` specifically, not "anything other than active": the caller booking
+   * this slot is the holder, so resyncQueue has already moved the entry to
+   * `onHold` for them. Testing for active would reject every legitimate
+   * booking. */
+  const entrySnap = await db.collection('listings').doc(request.listingId)
+    .collection('gameEntries').doc(request.gameEntryId).get();
+  if (!entrySnap.exists || entrySnap.data().status === 'sold') {
+    throw new HttpsError('failed-precondition', 'That game is no longer available');
   }
 
   const slotMinutes = TimeSlots.SLOT_MINUTES;

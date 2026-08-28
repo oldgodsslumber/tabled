@@ -242,16 +242,48 @@ service cloud.firestore {
       match /gameEntries/{entryId} {
         allow read: if true;
 
+        // Does the parent listing already exist, and is it the caller's?
+        //
+        // This is the missing half of the ownership check. Pinning only the
+        // entry's OWN sellerId meant anyone signed in could staple an entry
+        // onto somebody else's listing: gameEntries are world-readable, so it
+        // rendered as one of that seller's games, and because update/delete key
+        // off the entry's sellerId the real owner could not remove it. Worse,
+        // createRequest reads sellerId from the LISTING, so requesting the
+        // injected item opened a genuine request against a seller for something
+        // they never listed.
+        //
+        // `parentAbsent()` is what preserves the reason the original check was
+        // written this way: a listing and its entries are saved in ONE batch,
+        // rules evaluate every write in a batch against the PRE-batch database,
+        // and so the parent genuinely does not exist yet at the instant the
+        // first entry is checked. Allowing that case keeps the first save
+        // working; every later append has a parent to check against. An entry
+        // written under an id no listing ever occupies is inert -- listing ids
+        // are client-generated randoms, so it cannot be aimed at a future one.
+        function parentAbsent() {
+          return !exists(/databases/$(database)/documents/listings/$(listingId));
+        }
+        function ownsParent() {
+          return !parentAbsent()
+            && get(/databases/$(database)/documents/listings/$(listingId)).data.sellerId == request.auth.uid;
+        }
+
         allow create: if isUser(request.resource.data.sellerId)
+          && (parentAbsent() || ownsParent())
           && request.resource.data.status == 'active'
           && request.resource.data.currentHoldRequestId == null
           && request.resource.data.holdExpiresAt == null
           && request.resource.data.queueCount == 0;
 
-        allow update: if isUser(resource.data.sellerId)
+        // The listing's owner can edit and remove entries under their own
+        // listing, not just entries stamped with their uid -- otherwise an
+        // entry injected before this fix would be permanently unremovable
+        // without deleting the whole listing.
+        allow update: if (isUser(resource.data.sellerId) || ownsParent())
           && !changed(['status', 'currentHoldRequestId', 'holdExpiresAt', 'queueCount', 'sellerId']);
 
-        allow delete: if isUser(resource.data.sellerId);
+        allow delete: if isUser(resource.data.sellerId) || ownsParent();
       }
     }
 
@@ -434,6 +466,23 @@ service cloud.firestore {
                      // the address flow is entirely server-mediated.
                      'meetingAddressPending', 'meetingAddressFor',
                      'messagesArchived'])
+        // The read markers are per-side, and this rule has to say so too.
+        // Rules OR together, so the narrow markRead rule above only actually
+        // binds once THIS rule stops applying -- i.e. after completion. While a
+        // trade was open, either party could write the other's marker and
+        // silently clear their unread badge. Same ternary as above, on purpose.
+        && (resource.data.buyerId == request.auth.uid
+            ? !changed(['lastReadSellerAt'])
+            : !changed(['lastReadBuyerAt']))
+        // The lastMessage* fields are a denormalized mirror of the messages
+        // subcollection, written by Store.sendMessage so the dashboard can show
+        // a preview from one read. Messages themselves are pinned to
+        // senderId == auth.uid and are immutable, so the mirror must not be
+        // looser than the source: you may update the preview, but only ever
+        // attributed to yourself. Without this either party could forge a
+        // dashboard row quoting the other person saying something they didn't.
+        && (!changed(['lastMessageSenderId'])
+            || request.resource.data.lastMessageSenderId == request.auth.uid)
         // Only the current holder may put a time on the table; someone sitting
         // at position 3 can read and chat but cannot jump the queue.
         && (request.resource.data.status != 'proposedTime'
@@ -441,8 +490,24 @@ service cloud.firestore {
         // Confirming a proposal is the SELLER's call, whoever proposed it.
         // Without this a buyer could propose a time and immediately mark it
         // scheduled themselves, which is the entire gate the spec describes.
+        //
+        // The queuePosition half matters just as much and was missing: the
+        // proposedTime guard above checked it, this one did not, so a seller
+        // could take someone at position 3 straight to `scheduled` and carry
+        // them through to a completed sale -- and completion then expires the
+        // rightful holder at position 0 as `itemSold`. The queue is only a
+        // queue if BOTH doors onto the schedule check it.
         && (request.resource.data.status != 'scheduled'
-            || resource.data.sellerId == request.auth.uid)
+            || (resource.data.sellerId == request.auth.uid
+                && resource.data.queuePosition == 0))
+        // A closed request stays closed. Without this an expired buyer could
+        // write their own request back to `onHold` -- and since bookSlot only
+        // asks for status and queuePosition, go on to book a slot on an item
+        // that had already sold, resurrecting a queue on a dead entry.
+        // `completed` is covered by the freeze at the top of this rule.
+        && !(resource.data.status in ['cancelled', 'expired']
+             && request.resource.data.status in
+                  ['queued', 'onHold', 'proposedTime', 'scheduled'])
         // `completed` needs mutual confirmation, which arrives in M7. Until
         // that flow exists, nobody reaches it from the client.
         && request.resource.data.status in
@@ -482,6 +547,13 @@ service cloud.firestore {
       // second attempt into an UPDATE, which the last line here denies. Without
       // it, one person could review the same trade repeatedly and move an
       // average on their own.
+      // reviewedTrade() is the trade being reviewed. Repeated get() calls to the
+      // same path inside one evaluation are cached, so naming it costs nothing
+      // and keeps the counterparty check below readable.
+      function reviewedTrade() {
+        return get(/databases/$(database)/documents/requests/$(request.resource.data.requestId)).data;
+      }
+
       allow create: if reviewId == request.resource.data.requestId + '_' + request.auth.uid
         && signedIn()
         && isUser(request.resource.data.reviewerId)
@@ -490,9 +562,19 @@ service cloud.firestore {
         && request.resource.data.rating >= 1
         && request.resource.data.rating <= 5
         && exists(/databases/$(database)/documents/requests/$(request.resource.data.requestId))
-        && get(/databases/$(database)/documents/requests/$(request.resource.data.requestId)).data.status == 'completed'
-        && (get(/databases/$(database)/documents/requests/$(request.resource.data.requestId)).data.buyerId == request.auth.uid
-            || get(/databases/$(database)/documents/requests/$(request.resource.data.requestId)).data.sellerId == request.auth.uid);
+        && reviewedTrade().status == 'completed'
+        && (reviewedTrade().buyerId == request.auth.uid
+            || reviewedTrade().sellerId == request.auth.uid)
+        // The reviewee must be the OTHER party to this trade. Checking only
+        // that the caller was in the trade left revieweeId a free field: any
+        // completed trade licensed a drive-by review of a total bystander, who
+        // then carried the rating on their public profile for a trade they were
+        // never in. onReviewCreate trusts revieweeId verbatim, so this is the
+        // only place it can be pinned.
+        && request.resource.data.revieweeId ==
+             (reviewedTrade().buyerId == request.auth.uid
+                ? reviewedTrade().sellerId
+                : reviewedTrade().buyerId);
 
       allow update, delete: if false;
     }
