@@ -10,7 +10,7 @@
  */
 window.CFG = (function () {
 
-  var BUILD = '20260825c';
+  var BUILD = '20260901c';
 
   /* ---- Condition tiers ---------------------------------------------------
    * Ordered best → worst. `key` is what's stored; never store the label. */
@@ -469,6 +469,64 @@ window.CFG = (function () {
    * Capped so a big bundle can't blow past Firestore's index limits. */
   var MAX_ROLLUP_TERMS = 50;
 
+  /* ---- Plain-text export --------------------------------------------------
+   * Turning a profile into a block of text somebody can paste into a Facebook
+   * group, a Reddit thread or a Discord channel.
+   *
+   * "A table" is not one format. The venues disagree about what a table IS:
+   * Reddit renders markdown pipes, Facebook renders nothing and sets the text
+   * in a proportional font (so a padded ASCII table collapses into ragged
+   * garbage and pipes show up as literal pipes), Discord only aligns inside a
+   * code fence. So each venue gets its own formatter and they all read from
+   * one row model. Adding a format is an entry here plus a function in
+   * export.js — nothing else changes.
+   *
+   * `limit` is the venue's REALISTIC cap, not its absolute one: a Facebook
+   * post allows 63,206 characters but a comment stops at 8,000, and the
+   * comment is what people actually hit. The counter warns against this. */
+  var EXPORT = {
+    /* null = derive from the page it's served from (location.origin +
+     * pathname), which is right on tabled-2ad11.web.app, on a custom domain
+     * and on localhost alike. Set a string here only if the app is ever served
+     * from a path that shouldn't be the one shared. */
+    ORIGIN: null,
+
+    /* Ceilings on one export. A seller with 200+ active listings gets a
+     * truncation notice rather than a thousand-document read. */
+    MAX_LISTINGS: 200,
+    LISTING_PAGE: 50,
+    /* getEntries is one subcollection read per listing. Promise.all over 200
+     * of them fires 200 simultaneous reads the moment the modal opens; this
+     * paces them. */
+    ENTRY_CONCURRENCY: 6,
+
+    MAX_TITLE: 40,      /* fixed-width formats truncate past this */
+    MAX_NOTE: 120,
+
+    /* Which columns are on before the seller touches anything. Condition and
+     * price are the two facts every buyer asks for; the rest are noise in a
+     * post that has to stay skimmable. */
+    DEFAULT_COLUMNS: {
+      condition: true,
+      price: true,
+      tags: false,
+      notes: false,
+      links: false,
+      onHold: false
+    },
+
+    FORMATS: [
+      {
+        key: 'facebook',
+        label: 'Facebook',
+        limit: 8000,
+        limitLabel: 'a Facebook comment',
+        hint: 'One game per line. No table characters — Facebook sets ' +
+              'everything in a proportional font, so columns would not line up.'
+      }
+    ]
+  };
+
   return {
     BUILD: BUILD,
     PROMO: PROMO,
@@ -497,6 +555,7 @@ window.CFG = (function () {
     PHOTO: PHOTO,
     SEARCH: SEARCH,
     MAX_ROLLUP_TERMS: MAX_ROLLUP_TERMS,
+    EXPORT: EXPORT,
 
     /* Lookup helpers so views never carry their own copy of the tables. */
     condition: function (key) {
@@ -504,6 +563,12 @@ window.CFG = (function () {
         if (CONDITIONS[i].key === key) return CONDITIONS[i];
       }
       return { key: key, label: key, blurb: '' };
+    },
+    exportFormat: function (key) {
+      for (var i = 0; i < EXPORT.FORMATS.length; i++) {
+        if (EXPORT.FORMATS[i].key === key) return EXPORT.FORMATS[i];
+      }
+      return EXPORT.FORMATS[0];
     },
     reasons: function (targetType) {
       return REPORT_REASONS[targetType] || REPORT_REASONS.listing;

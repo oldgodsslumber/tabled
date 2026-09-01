@@ -241,6 +241,88 @@ window.Store = (function () {
     return raw / Math.pow(ageH + 2, CFG.HOT.gravity);
   }
 
+  /* ---- Inventory collection (plain-text export) ---------------------------
+   * The profile page pages its listings 12 at a time, so "export what's on
+   * screen" would silently emit only the first page — the kind of quiet
+   * wrongness that makes a seller stop trusting the feature. This walks the
+   * whole set.
+   *
+   * The per-game facts the export actually needs — condition, asking price,
+   * tags, notes, lot contents — live on the gameEntries subcollection, not on
+   * the parent listing. The parent carries only denormalized rollups, which
+   * are far too lossy to export from.
+   *
+   * Shared by both backends because the paging-and-fanning-out logic is
+   * identical; only the two primitives it calls differ. Both are passed in
+   * already bound, so this never has to care which backend it's driving. */
+  function collectInventory(queryFn, entriesFn, uid, opts) {
+    opts = opts || {};
+    var statuses = opts.statuses || ['active'];
+    var max = CFG.EXPORT.MAX_LISTINGS;
+    var listings = [];
+    var cursor = null;
+    var truncated = false;
+    var failed = 0;
+
+    function page() {
+      return queryFn({
+        sellerId: uid, statuses: statuses, sort: 'new', limit: CFG.EXPORT.LISTING_PAGE
+      }, cursor).then(function (p) {
+        listings = listings.concat(p.items || []);
+        cursor = p.cursor;
+        if (listings.length >= max) {
+          /* Only truncated if something was actually left out. Landing exactly
+           * on the cap with the backend exhausted means the seller has exactly
+           * `max` listings and the export is complete — telling them the rest
+           * is behind a link would be a lie. */
+          truncated = listings.length > max || !p.exhausted;
+          listings = listings.slice(0, max);
+          return;
+        }
+        /* !p.items.length guards a backend that reports itself un-exhausted
+         * but has stopped returning rows; without it this recurses forever. */
+        if (p.exhausted || !p.items || !p.items.length) return;
+        return page();
+      });
+    }
+
+    /* A pool, not Promise.all: one subcollection read per listing means 200
+     * simultaneous reads the instant the modal opens. */
+    function fetchEntries() {
+      var out = new Array(listings.length);
+      var next = 0;
+      function worker() {
+        if (next >= listings.length) return Promise.resolve();
+        var i = next++;
+        return entriesFn(listings[i].id).catch(function (err) {
+          console.warn('[tabled] export: entries failed', listings[i].id, err);
+          /* null, not [] — an empty array is indistinguishable from a listing
+           * that genuinely has no entries, and a seller must never be handed a
+           * silently short list to post in public. The count is surfaced. */
+          failed++;
+          return null;
+        }).then(function (entries) {
+          out[i] = {
+            listing: listings[i],
+            entries: entries || [],
+            incomplete: entries === null
+          };
+          return worker();
+        });
+      }
+      var lanes = [];
+      var n = Math.min(CFG.EXPORT.ENTRY_CONCURRENCY, listings.length) || 1;
+      for (var k = 0; k < n; k++) lanes.push(worker());
+      return Promise.all(lanes).then(function () {
+        return out.filter(Boolean);
+      });
+    }
+
+    return page().then(fetchEntries).then(function (items) {
+      return { items: items, truncated: truncated, failed: failed };
+    });
+  }
+
   /* ================= Cloud backend ======================================== */
 
   function CloudBackend(fb, db, storage, fns) {
@@ -598,14 +680,57 @@ window.Store = (function () {
         clauses.push(fb.limit(lim * 2));
 
         return fb.getDocs(fb.query.apply(null, [col('listings')].concat(clauses))).then(function (qs) {
-          var raw = [], last = null;
-          qs.forEach(function (s) { raw.push(snapData(s)); last = s; });
+          var raw = [], snaps = {}, last = null;
+          qs.forEach(function (s) {
+            var d = snapData(s);
+            last = s;
+            if (!d) return;
+            raw.push(d);
+            snaps[d.id] = s;
+          });
+          var passed = pipeline(raw);
+          var items = passed.slice(0, lim);
+
+          /* The cursor has to be the last doc we actually RETURNED, not the
+           * last one we fetched. Over-fetching lim*2 and then cursoring off
+           * the far end skips every doc between the slice boundary and the
+           * fetch boundary — with lim=50 and nothing filtered, that is docs
+           * 51-100 silently missing from page 2, and from every page after.
+           * It cost the feed's "Load more" and the profile's listing sections
+           * half their rows, invisibly, because a skipped listing looks
+           * exactly like a listing that was never there.
+           *
+           * Safe because every sort here (new/hot/deal) orders the query by
+           * the same field sortItems re-sorts on, so the last returned item is
+           * also the furthest along in query order. Resuming from it re-reads
+           * the docs the client-side filters rejected — a few extra reads in
+           * exchange for not losing rows. */
+          var tail = items.length ? snaps[items[items.length - 1].id] : null;
+
           return {
-            items: pipeline(raw).slice(0, lim),
-            cursor: last,
-            exhausted: raw.length < lim * 2
+            items: items,
+            /* No items survived the filters: fall back to the fetch boundary
+             * so paging still advances instead of looping on one page. */
+            cursor: tail || last,
+            /* Two separate ways there can be more: the fetch came back full,
+             * or the fetch was short but MORE ROWS SURVIVED THE FILTERS THAN
+             * WE RETURNED. Testing only the first is why a seller with 60
+             * listings saw 50 and no "Load more" — 60 docs is a short fetch
+             * against the lim*2 over-fetch, so the page called itself the last
+             * one while holding 10 rows back. */
+            exhausted: raw.length < lim * 2 && passed.length <= lim
           };
         });
+      },
+
+      /* Every active listing plus its entries, for the plain-text export.
+       * `this` is safe: the facade always calls this as backend.exportInventory. */
+      exportInventory: function (uid, opts) {
+        var api = this;
+        return collectInventory(
+          function (f, c) { return api.queryListings(f, c); },
+          function (id) { return api.getEntries(id); },
+          uid, opts);
       },
 
       /* Non-owners must never get write access to someone else's listing doc,
@@ -1322,6 +1447,17 @@ window.Store = (function () {
           cursor: start + lim,
           exhausted: start + lim >= items.length
         });
+      },
+
+      /* Mirrors CloudBackend.exportInventory exactly — same shared collector,
+       * so demo mode and cloud mode produce identical text for the same
+       * inventory rather than a simplified stand-in that hides bugs. */
+      exportInventory: function (uid, opts) {
+        var api = this;
+        return collectInventory(
+          function (f, c) { return api.queryListings(f, c); },
+          function (id) { return api.getEntries(id); },
+          uid, opts);
       },
 
       bumpView: function (id) {
@@ -2285,6 +2421,20 @@ window.Store = (function () {
     saveListing: function (id, listing, entries, games) { return backend.saveListing(id, listing, entries, games); },
     deleteListing: function (id) { return backend.deleteListing(id); },
     queryListings: function (f, c) { return backend.queryListings(f, c); },
+
+    /* Always the signed-in seller's own inventory — no uid parameter on
+     * purpose. Exporting somebody ELSE'S list to Facebook is a scraping
+     * affordance, not a sharing one, and the cheapest place to make that
+     * impossible is to never accept the argument. */
+    exportInventory: function (opts) {
+      if (!myUid) return Promise.reject(new Error('Not signed in'));
+      return backend.exportInventory(myUid, opts).then(function (data) {
+        /* id is forced on rather than trusted from the profile doc — the
+         * export's link back to the profile is built from it. */
+        data.user = Object.assign({}, myProfile || {}, { id: myUid });
+        return data;
+      });
+    },
     bumpView: function (id) { return backend.bumpView(id); },
     bumpRequestCount: function (id) { return backend.bumpRequestCount(id); },
     uploadPhoto: function (blob) { return backend.uploadPhoto(myUid, blob); },

@@ -1406,6 +1406,40 @@ select {
   border-top: 1px solid var(--line);
 }
 
+/* ---- Plain-text export --------------------------------------------------
+   The preview is a real <textarea>, not a <pre>. On iOS Safari the clipboard
+   API rejects whenever the call drifts from the user's tap, and a textarea
+   means the fallback is "it is already selected, copy it" instead of a dead
+   button. Monospace so the seller can see the shape of what they are about to
+   paste, even for the formats that will not be monospace at the far end. */
+.export-formats { margin-bottom: .75rem; }
+.export-hint { margin: 0 0 .5rem; }
+.export-hint:empty { display: none; }
+
+.export-preview {
+  width: 100%;
+  min-height: 14rem;
+  max-height: 40vh;
+  resize: vertical;
+  padding: .6rem .7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .8rem;
+  line-height: 1.5;
+  /* Long game titles and URLs must wrap rather than force a horizontal
+     scrollbar the seller has to hunt sideways in. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.export-count { margin: .4rem 0 0; }
+.export-count.warn { color: var(--warn); font-weight: 600; }
+.export-count.bad { color: var(--bad); font-weight: 600; }
+.export-privacy { margin: .6rem 0 0; }
+
 .filter-group { margin-bottom: 1.35rem; }
 /* ---- Filter facets (include / exclude chips) ----------------------------- */
 .filter-howto { margin: 0 0 1rem; }

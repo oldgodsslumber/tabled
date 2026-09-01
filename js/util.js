@@ -281,6 +281,69 @@ window.U = (function () {
     return v ? "background-image:url('" + attr(v.replace(/'/g, '%27')) + "')" : '';
   }
 
+  /* ---- Clipboard ----------------------------------------------------------
+   * Three tiers, because one is not enough on a phone. navigator.clipboard is
+   * the real API but it is unavailable on insecure origins and rejects on iOS
+   * Safari whenever the call is even slightly detached from the user's tap.
+   * execCommand('copy') is deprecated and still the only thing that works
+   * there. If both fail the caller is told so and can fall back to "the text
+   * is selected, use your keyboard" — which is why `el` is worth passing:
+   * selecting the source textarea makes that instruction true.
+   *
+   * Resolves true on success, false when the user has to copy it themselves.
+   * Never rejects — a failed copy is a UI state, not an error. */
+  function copyText(text, el) {
+    text = String(text === null || text === undefined ? '' : text);
+
+    function legacy() {
+      /* execCommand copies the SELECTION, not the argument. Reusing the
+       * caller's element is only safe while it still holds exactly the text we
+       * were asked to copy — otherwise the clipboard silently gets the
+       * element's stale contents and we report success. Any mismatch falls
+       * through to a temp node holding the real string. */
+      var node = (el && typeof el.value === 'string' && el.value === text) ? el : null;
+      var temp = null;
+      if (!node) {
+        if (!document.body) return false;
+        temp = document.createElement('textarea');
+        temp.value = text;
+        temp.setAttribute('readonly', '');
+        /* Off-screen but not display:none — a hidden element cannot be
+         * selected, and an unstyled one scrolls the page on focus. */
+        temp.style.cssText = 'position:fixed;top:-1000px;opacity:0;';
+        document.body.appendChild(temp);
+        node = temp;
+      }
+      var ok = false;
+      try {
+        node.focus();
+        node.setSelectionRange(0, node.value.length);
+        ok = document.execCommand('copy');
+      } catch (e) {
+        ok = false;
+      }
+      if (temp && temp.parentNode) temp.parentNode.removeChild(temp);
+      return ok;
+    }
+
+    /* "Never rejects" has to survive a SYNCHRONOUS throw too: some locked-down
+     * webviews throw out of writeText rather than returning a rejected
+     * promise, and that lands outside .catch. The caller only attaches .then,
+     * so an escaping error would kill the copy button with no toast at all. */
+    function safeLegacy() {
+      try { return legacy(); } catch (e) { return false; }
+    }
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text)
+          .then(function () { return true; })
+          .catch(function () { return safeLegacy(); });
+      }
+    } catch (e) { /* fall through to the legacy path */ }
+    return Promise.resolve(safeLegacy());
+  }
+
   function bggBadge() {
     return '<a class="bgg-badge" href="https://boardgamegeek.com" target="_blank" ' +
       'rel="noopener noreferrer" aria-label="Powered by BoardGameGeek">' +
@@ -294,7 +357,7 @@ window.U = (function () {
     $: $, $$: $$, on: on, debounce: debounce,
     toast: toast, modal: modal, confirm: confirmDialog,
     money: money, toDate: toDate, ago: ago, monthYear: monthYear, plural: plural,
-    resizeImage: resizeImage,
+    resizeImage: resizeImage, copyText: copyText,
     uid: uid, clamp: clamp, uniq: uniq, initials: initials,
     avatar: avatar, spinner: spinner, empty: empty, bggBadge: bggBadge, bgurl: bgurl
   };
